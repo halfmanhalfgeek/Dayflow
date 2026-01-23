@@ -153,20 +153,10 @@ final class GeminiDirectProvider {
         // Escape single quotes in JSON for shell
         let escapedJson = jsonString.replacingOccurrences(of: "'", with: "'\\''")
         
-        // Mask API key in URL for security (show first 8 chars only)
-        var maskedUrl = url
-        if let keyRange = url.range(of: "key=") {
-            let keyStart = url.index(keyRange.upperBound, offsetBy: 0)
-            if url.distance(from: keyStart, to: url.endIndex) > 8 {
-                let keyEnd = url.index(keyStart, offsetBy: 8)
-                let maskedKey = String(url[keyStart..<keyEnd]) + "..."
-                maskedUrl = String(url[url.startIndex..<keyRange.upperBound]) + maskedKey
-            }
-        }
-        
-        // Build curl command
+        // Build curl command with header-based authentication
         var curlCommand = "# Replace YOUR_API_KEY with your actual API key\n"
-        curlCommand += "curl -X POST '\(maskedUrl)' \\\n"
+        curlCommand += "curl -X POST '\(url)' \\\n"
+        curlCommand += "  -H 'X-Goog-Api-Key: YOUR_API_KEY' \\\n"
         curlCommand += "  -H 'Content-Type: application/json' \\\n"
         curlCommand += "  -d '\(escapedJson)'"
         
@@ -174,11 +164,13 @@ final class GeminiDirectProvider {
     }
     
     private func logCurlCommand(context: String, url: String, requestBody: [String: Any]) {
+        #if DEBUG
         let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
         print("\n📋 CURL COMMAND for \(context) at \(timestamp):")
         print("================================================================================")
         print(generateCurlCommand(url: url, requestBody: requestBody))
         print("================================================================================\n")
+        #endif
     }
     
     // Track request timing for rate limit analysis
@@ -1057,8 +1049,10 @@ final class GeminiDirectProvider {
     }
     
     private func uploadSimple(data: Data, mimeType: String) async throws -> String {
-        var request = URLRequest(url: URL(string: fileEndpoint + "?key=\(apiKey)")!)
+        var request = URLRequest(url: URL(string: fileEndpoint)!)
         request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "X-Goog-Api-Key")
         request.setValue(mimeType, forHTTPHeaderField: "Content-Type")
         request.httpBody = data
 
@@ -1088,8 +1082,9 @@ private func uploadResumable(data: Data, mimeType: String) async throws -> Strin
         body.append(try JSONEncoder().encode(metadata))
         body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
         
-        var request = URLRequest(url: URL(string: fileEndpoint + "?key=\(apiKey)")!)
+        var request = URLRequest(url: URL(string: fileEndpoint)!)
         request.httpMethod = "POST"
+        request.setValue(apiKey, forHTTPHeaderField: "X-Goog-Api-Key")
         request.setValue("resumable", forHTTPHeaderField: "X-Goog-Upload-Protocol")
         request.setValue("start", forHTTPHeaderField: "X-Goog-Upload-Command")
         request.setValue("\(data.count)", forHTTPHeaderField: "X-Goog-Upload-Raw-Size")
@@ -1165,11 +1160,14 @@ private func uploadResumable(data: Data, mimeType: String) async throws -> Strin
     }
     
     private func getFileStatus(fileURI: String) async throws -> String {
-        guard let url = URL(string: fileURI + "?key=\(apiKey)") else {
+        guard let url = URL(string: fileURI) else {
             throw NSError(domain: "GeminiError", code: 6, userInfo: [NSLocalizedDescriptionKey: "Invalid file URI"])
         }
         
-        let (data, response) = try await URLSession.shared.data(from: url)
+        var request = URLRequest(url: url)
+        request.setValue(apiKey, forHTTPHeaderField: "X-Goog-Api-Key")
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
 
         if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
            let state = json["state"] as? String {
@@ -1211,9 +1209,10 @@ private func uploadResumable(data: Data, mimeType: String) async throws -> Strin
         ]
 
         // Single API call (no retry logic in this function)
-        let urlWithKey = endpointForModel(model) + "?key=\(apiKey)"
-        var request = URLRequest(url: URL(string: urlWithKey)!)
+        let endpoint = endpointForModel(model)
+        var request = URLRequest(url: URL(string: endpoint)!)
         request.httpMethod = "POST"
+        request.setValue(apiKey, forHTTPHeaderField: "X-Goog-Api-Key")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 120 // 2 minutes timeout
         let requestStart = Date()
@@ -1222,7 +1221,7 @@ private func uploadResumable(data: Data, mimeType: String) async throws -> Strin
             request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
 
             // Log curl command
-            logCurlCommand(context: "transcribe.generateContent", url: urlWithKey, requestBody: requestBody)
+            logCurlCommand(context: "transcribe.generateContent", url: endpoint, requestBody: requestBody)
 
             // Log request timing
             logRequestTiming(context: "transcribe")
@@ -1525,9 +1524,10 @@ private func uploadResumable(data: Data, mimeType: String) async throws -> Strin
         ]
 
         // Single API call (retry logic handled by outer loop in generateActivityCards)
-        let urlWithKey = endpointForModel(model) + "?key=\(apiKey)"
-        var request = URLRequest(url: URL(string: urlWithKey)!)
+        let endpoint = endpointForModel(model)
+        var request = URLRequest(url: URL(string: endpoint)!)
         request.httpMethod = "POST"
+        request.setValue(apiKey, forHTTPHeaderField: "X-Goog-Api-Key")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 120 // 2 minutes timeout
         let requestStart = Date()
@@ -1536,7 +1536,7 @@ private func uploadResumable(data: Data, mimeType: String) async throws -> Strin
             request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
 
             // Log curl command
-            logCurlCommand(context: "cards.generateContent", url: urlWithKey, requestBody: requestBody)
+            logCurlCommand(context: "cards.generateContent", url: endpoint, requestBody: requestBody)
 
             // Log request timing
             logRequestTiming(context: "cards")

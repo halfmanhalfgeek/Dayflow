@@ -114,9 +114,13 @@ final class KeychainManager {
                 return nil
             }
             
+            #if DEBUG
             print("✅ [KeychainManager] Successfully retrieved key")
             print("   Key length: \(apiKey.count) characters")
             print("   Key prefix: \(apiKey.prefix(8))...")
+            #else
+            print("✅ [KeychainManager] Successfully retrieved key")
+            #endif
             
             return apiKey
         }
