@@ -9,6 +9,31 @@
 import Foundation
 import Combine
 
+private let chatServiceLongDateFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "EEEE, MMMM d, yyyy"
+    return formatter
+}()
+
+private let chatServiceTimeFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "h:mm a"
+    return formatter
+}()
+
+private let chatServiceDayFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "yyyy-MM-dd"
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    return formatter
+}()
+
+private let chatServiceDisplayDayFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "MMM d"
+    return formatter
+}()
+
 /// A debug log entry for the chat debug panel
 struct ChatDebugEntry: Identifiable {
     let id = UUID()
@@ -179,11 +204,24 @@ final class ChatService: ObservableObject {
         // Track state during streaming
         var responseText = ""
         var currentToolId: UUID?
+        var pendingToolSeparator = false
+        var sawTextDelta = false
         streamingText = ""
         startWorkStatus()
 
         // Add response message only when text arrives
         var responseMessageId: UUID?
+
+        func appendWithToolSeparatorIfNeeded(_ chunk: String) {
+            if pendingToolSeparator {
+                if let last = responseText.last, !last.isWhitespace,
+                   let first = chunk.first, !first.isWhitespace {
+                    responseText += " "
+                }
+                pendingToolSeparator = false
+            }
+            responseText += chunk
+        }
 
         do {
             // Use rich streaming with thinking and tool events
@@ -244,9 +282,11 @@ final class ChatService: ObservableObject {
                         }
                     }
                     currentToolId = nil
+                    pendingToolSeparator = true
 
                 case .textDelta(let chunk):
-                    responseText += chunk
+                    sawTextDelta = true
+                    appendWithToolSeparatorIfNeeded(chunk)
                     streamingText = responseText
                     updateWorkStatus { status in
                         if status.stage != .error {
@@ -273,16 +313,31 @@ final class ChatService: ObservableObject {
                     }
 
                 case .complete(let text):
-                    responseText = text
-                    log(.response, text)
-                    if responseMessageId == nil,
-                       !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if responseText.isEmpty {
+                        responseText = text
+                        pendingToolSeparator = false
+                    } else if pendingToolSeparator {
+                        appendWithToolSeparatorIfNeeded(text)
+                    } else if !sawTextDelta {
+                        responseText = text
+                    }
+                    streamingText = responseText
+                    log(.response, responseText)
+                    if let id = responseMessageId,
+                       let index = messages.firstIndex(where: { $0.id == id }) {
+                        messages[index] = ChatMessage(
+                            id: id,
+                            role: .assistant,
+                            content: responseText
+                        )
+                    } else if responseMessageId == nil,
+                              !responseText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         let id = UUID()
                         responseMessageId = id
                         messages.append(ChatMessage(
                             id: id,
                             role: .assistant,
-                            content: text
+                            content: responseText
                         ))
                     }
 
@@ -376,13 +431,8 @@ final class ChatService: ObservableObject {
 
     private func buildSystemPrompt() -> String {
         let now = Date()
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "EEEE, MMMM d, yyyy"
-        let currentDate = dateFormatter.string(from: now)
-
-        let timeFormatter = DateFormatter()
-        timeFormatter.dateFormat = "h:mm a"
-        let currentTime = timeFormatter.string(from: now)
+        let currentDate = chatServiceLongDateFormatter.string(from: now)
+        let currentTime = chatServiceTimeFormatter.string(from: now)
 
         // Use full path (~ doesn't expand in sqlite3)
         let dbPath = NSHomeDirectory() + "/Library/Application Support/Dayflow/chunks.sqlite"
@@ -394,6 +444,20 @@ final class ChatService: ObservableObject {
         Current time: \(currentTime)
         Day boundary: Days start at 4:00 AM (not midnight)
 
+        ## DATA INTEGRITY (CRITICAL)
+
+        You have Bash tool access. You MUST:
+        1. Actually execute sqlite3 commands to query the database — NEVER fabricate data
+        2. If a query returns no results, tell the user "No data found for [time period]"
+        3. If you cannot execute the query (tool error), tell the user what went wrong
+
+        DO NOT:
+        - Pretend to run queries by writing fake code blocks in your response
+        - Make up activity data based on the schema description
+        - Guess what the user might have done
+
+        If you're unsure whether you executed a real query, you probably didn't. Use the Bash tool to run sqlite3.
+
         ## DATABASE
 
         Path: \(dbPath)
@@ -403,7 +467,7 @@ final class ChatService: ObservableObject {
 
         **timeline_cards** - High-level activity summaries (start here)
         - day (YYYY-MM-DD), start_ts/end_ts (epoch seconds)
-        - title, summary, category, subcategory
+        - title, summary, detailed_summary, category, subcategory (detailed_summary is large—only pull if you really need the granularity)
         - category values: Work, Personal, Distraction, Idle, System
         - is_deleted (0=active, 1=deleted) - ALWAYS filter is_deleted=0
         - Ignore "processing failed" cards unless user explicitly asks about them
@@ -418,12 +482,57 @@ final class ChatService: ObservableObject {
         - **Grab what you need** - Don't be shy, fetch enough data to answer thoroughly
         - **Grab observations too** - If you need more granular detail, query observations
         - **Briefly mention what you grabbed** - Keep it short: "Grabbed today's cards" or "Pulled cards for Jan 11-17"
-        - **Watch for truncation** - Tool output may get cut off. If that happens, use LIMIT, break into multiple queries, or be selective with columns
+        - **Watch for truncation** - Tool output may get cut off. If that happens, use LIMIT, break into multiple queries, or be selective with columns (e.g., exclude detailed_summary)
+        - **Prefer human-readable times when needed** - Use SQLite datetime() with localtime for start/end
 
-        ### Example
+        ### Interpretation rules (read raw data)
 
-        Yesterday's longest block:
-        SELECT title, category, (end_ts - start_ts)/60 as minutes FROM timeline_cards WHERE day = '\(yesterdayDate())' AND is_deleted = 0 ORDER BY minutes DESC LIMIT 1
+        - This data is LLM-generated and not standardized. Avoid brittle SQL filtering.
+        - Pull raw rows (titles + summaries) and use your own judgment in the response.
+        - Titles/summaries may use different terms for the same thing (e.g., X vs Twitter).
+
+        Examples:
+        - "How much did I focus this week?" → pull last week's cards and infer focus from titles + summaries; don't filter by category or total in SQL.
+        - "How long on Twitter?" → scan titles + summaries for Twitter/X mentions; don't filter only on title.
+
+        ### Negative examples (don't do this)
+
+        1) Context switches (bad: category transitions)
+           - Bad approach: Use window functions (LAG) + GROUP BY category/subcategory to count switches.
+           - Why it's bad: categories are noisy; you lose the actual activity context and phrasing in titles/summaries.
+           - Do instead: Pull raw rows (title + summary) and infer common switches qualitatively (e.g., "coding → browsing threads").
+
+        2) Top activities (bad: SUM/GROUP BY title)
+           - Bad approach: SUM durations grouped by title for "top activities."
+           - Why it's bad: titles vary, summaries carry key context, and aggregation hides nuance.
+           - Do instead: Read raw cards and summarize the dominant themes.
+
+        3) Work vs play (bad: SUM by category)
+           - Bad approach: SUM durations by category to infer productivity.
+           - Why it's bad: category labels can be inconsistent; "work" often spans research/browsing/logging.
+           - Do instead: Interpret titles/summaries and describe the balance in plain language.
+
+        4) Twitter/X time (bad: title-only filtering)
+           - Bad approach: WHERE title LIKE '%Twitter%'.
+           - Why it's bad: activity might be labeled "X", or only mentioned in summaries.
+           - Do instead: Scan titles + summaries for Twitter/X mentions and summarize.
+
+        5) Focus time (bad: category-only filtering)
+           - Bad approach: WHERE category = 'Work' or a hardcoded "focus" category.
+           - Why it's bad: focus is a judgment call and may include deep research or analysis labeled differently.
+           - Do instead: Infer focus from the actual content in titles/summaries.
+
+        Human-readable timeline template (use when you need readable times):
+        SELECT
+          datetime(start_ts, 'unixepoch', 'localtime') AS start_time,
+          datetime(end_ts, 'unixepoch', 'localtime') AS end_time,
+          title,
+          summary,
+          category,
+          subcategory
+        FROM timeline_cards
+        WHERE day = '\(todayDate())' AND is_deleted = 0
+        ORDER BY start_ts
 
         ## INLINE CHARTS (OPTIONAL)
 
@@ -469,7 +578,7 @@ final class ChatService: ObservableObject {
         ## RESPONSE STYLE
 
         - **Brief and scannable** - A few key points, not a wall of text. Use bullets if they help organize.
-        - **Group by time of day** - "Morning", "Midday", "Afternoon/evening" - NOT specific timestamps like "9:20-10:04"
+        - **Avoid overly granular timestamps.**
         - **High-level summaries** - Don't list every activity, summarize the vibe
         - **Human-readable durations** - "about an hour", "a couple hours", not "45 minutes" or "4140 seconds"
         - **Markdown** - Use **bold** for emphasis where helpful
@@ -489,7 +598,7 @@ final class ChatService: ObservableObject {
 
         At the END of your response, include 3-4 follow-up question suggestions:
         - 1-2 natural follow-ups (dig deeper into something you mentioned)
-        - 1-2 orthogonal questions (different angles they might find interesting)
+        - 1-2 questions that explore the data in an entirely new direction from the user's most recent question; aim for unique, helpful insights they could get from their data
 
         Format EXACTLY like this (no "Suggestions:" label, just the block):
         ```suggestions
@@ -501,24 +610,9 @@ final class ChatService: ObservableObject {
     }
 
     private func todayDate() -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: Date())
+        chatServiceDayFormatter.string(from: Date())
     }
 
-    private func yesterdayDate() -> String {
-        let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: Date()) ?? Date()
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: yesterday)
-    }
-
-    private func weekAgoDate() -> String {
-        let weekAgo = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: weekAgo)
-    }
 
     // MARK: - Helpers
 
@@ -565,18 +659,6 @@ final class ChatService: ObservableObject {
         let rows = trimmed.split(whereSeparator: \.isNewline).count
         let rowLabel = rows == 1 ? "1 row" : "\(rows) rows"
         return "\(base) returned \(rowLabel)"
-    }
-
-    private func formatDateDisplay(_ dateString: String) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-
-        guard let date = formatter.date(from: dateString) else { return dateString }
-
-        let displayFormatter = DateFormatter()
-        displayFormatter.dateFormat = "MMM d"  // e.g., "Jan 7"
-        return displayFormatter.string(from: date)
     }
 
     // MARK: - Suggestions Parsing

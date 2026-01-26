@@ -65,6 +65,14 @@ final class LLMService: LLMServicing {
         }
     }
 
+    private func makeGemmaBackupProvider() -> GemmaBackupProvider? {
+        if let apiKey = KeychainManager.shared.retrieve(for: "gemini"), !apiKey.isEmpty {
+            return GemmaBackupProvider(apiKey: apiKey)
+        }
+        print("❌ [LLMService] Failed to retrieve Gemini API key for Gemma fallback")
+        return nil
+    }
+
     private func makeDayflowProvider(endpoint: String) -> DayflowBackendProvider? {
         if let token = KeychainManager.shared.retrieve(for: "dayflow"), !token.isEmpty {
             return DayflowBackendProvider(token: token, endpoint: endpoint)
@@ -100,33 +108,82 @@ final class LLMService: LLMServicing {
         )
     }
 
-    private func makeBatchProvider() throws -> BatchProviderActions {
+    private func makeBatchProvider() throws -> (actions: BatchProviderActions, fallbackState: GemmaFallbackState?) {
         switch providerType {
         case .geminiDirect:
             guard let provider = makeGeminiProvider() else { throw noProviderError() }
-            return BatchProviderActions(
-                transcribeScreenshots: provider.transcribeScreenshots,
-                generateActivityCards: provider.generateActivityCards
-            )
+            let gemmaProvider = makeGemmaBackupProvider()
+            let fallbackState = GemmaFallbackState()
+
+            return (actions: BatchProviderActions(
+                transcribeScreenshots: { [weak self] screenshots, batchStartTime, batchId in
+                    if fallbackState.preferGemma, let gemmaProvider {
+                        return try await gemmaProvider.transcribeScreenshots(screenshots, batchStartTime: batchStartTime, batchId: batchId)
+                    }
+
+                    do {
+                        return try await provider.transcribeScreenshots(screenshots, batchStartTime: batchStartTime, batchId: batchId)
+                    } catch {
+                        guard let gemmaProvider else { throw error }
+                        fallbackState.preferGemma = true
+                        self?.logGemmaFallback(operation: "transcribe", error: error, batchId: batchId)
+                        return try await gemmaProvider.transcribeScreenshots(screenshots, batchStartTime: batchStartTime, batchId: batchId)
+                    }
+                },
+                generateActivityCards: { [weak self] observations, context, batchId in
+                    if fallbackState.preferGemma, let gemmaProvider {
+                        fallbackState.usedGemmaForCardGeneration = true
+                        return try await gemmaProvider.generateActivityCards(observations: observations, context: context, batchId: batchId)
+                    }
+
+                    do {
+                        return try await provider.generateActivityCards(observations: observations, context: context, batchId: batchId)
+                    } catch {
+                        guard let gemmaProvider else { throw error }
+                        fallbackState.preferGemma = true
+                        fallbackState.usedGemmaForCardGeneration = true
+                        self?.logGemmaFallback(operation: "generate_cards", error: error, batchId: batchId)
+                        return try await gemmaProvider.generateActivityCards(observations: observations, context: context, batchId: batchId)
+                    }
+                }
+            ), fallbackState: fallbackState)
         case .dayflowBackend(let endpoint):
             guard let provider = makeDayflowProvider(endpoint: endpoint) else { throw noProviderError() }
-            return BatchProviderActions(
+            return (actions: BatchProviderActions(
                 transcribeScreenshots: provider.transcribeScreenshots,
                 generateActivityCards: provider.generateActivityCards
-            )
+            ), fallbackState: nil)
         case .ollamaLocal(let endpoint):
             let provider = makeOllamaProvider(endpoint: endpoint)
-            return BatchProviderActions(
+            return (actions: BatchProviderActions(
                 transcribeScreenshots: provider.transcribeScreenshots,
                 generateActivityCards: provider.generateActivityCards
-            )
+            ), fallbackState: nil)
         case .chatGPTClaude:
             let provider = makeChatCLIProvider()
-            return BatchProviderActions(
+            return (actions: BatchProviderActions(
                 transcribeScreenshots: provider.transcribeScreenshots,
                 generateActivityCards: provider.generateActivityCards
-            )
+            ), fallbackState: nil)
         }
+    }
+
+    private final class GemmaFallbackState {
+        var preferGemma = false
+        var usedGemmaForCardGeneration = false
+    }
+
+    private func logGemmaFallback(operation: String, error: Error, batchId: Int64?) {
+        let nsError = error as NSError
+        AnalyticsService.shared.capture("llm_fallback_used", [
+            "provider": "gemini",
+            "fallback_provider": "gemma",
+            "operation": operation,
+            "error_domain": nsError.domain,
+            "error_code": nsError.code,
+            "error_message": nsError.localizedDescription,
+            "batch_id": batchId as Any
+        ])
     }
 
     private func makeTextProvider() throws -> TextProviderActions {
@@ -211,7 +268,9 @@ final class LLMService: LLMServicing {
                     "llm_provider": providerName()
                 ])
 
-                let batchProvider = try makeBatchProvider()
+                let providerBundle = try makeBatchProvider()
+                let batchProvider = providerBundle.actions
+                let fallbackState = providerBundle.fallbackState
                 
                 // Mark batch as processing
                 StorageManager.shared.updateBatch(batchId, status: "processing")
@@ -263,13 +322,13 @@ final class LLMService: LLMServicing {
                 
                 // SLIDING WINDOW CARD GENERATION - Replace old card generation with sliding window approach
                 
-                // Calculate time window (1 hour before current batch end time)
+                // Calculate time window (30 minutes before current batch end time)
                 let currentTime = Date(timeIntervalSince1970: TimeInterval(batchEndTs))
-                let oneHourAgo = currentTime.addingTimeInterval(-3600) // 1 hour = 3600 seconds
+                let thirtyMinutesAgo = currentTime.addingTimeInterval(-1800) // 30 minutes = 1800 seconds
                 
-                // Fetch all observations from the last hour (instead of just current batch)
+                // Fetch all observations from the last 30 minutes (instead of just current batch)
                 let recentObservations = StorageManager.shared.fetchObservationsByTimeRange(
-                    from: oneHourAgo,
+                    from: thirtyMinutesAgo,
                     to: currentTime
                 )
 
@@ -279,9 +338,9 @@ final class LLMService: LLMServicing {
                     print("       observation: \(obs.observation)")
                 }
                 
-                // Fetch existing timeline cards that overlap with the last hour
+                // Fetch existing timeline cards that overlap with the last 30 minutes
                 let existingTimelineCards = StorageManager.shared.fetchTimelineCardsByTimeRange(
-                    from: oneHourAgo,
+                    from: thirtyMinutesAgo,
                     to: currentTime
                 )
                 
@@ -321,11 +380,12 @@ final class LLMService: LLMServicing {
 
                 // Generate activity cards using sliding window observations
                 let (cards, _) = try await batchProvider.generateActivityCards(recentObservations, context, batchId)
+                let isBackupGenerated = fallbackState?.usedGemmaForCardGeneration == true
                 // Note: card generation log is not persisted per-batch yet
                 
                 // Replace old cards with new ones in the time range
                 let (insertedCardIds, deletedVideoPaths) = StorageManager.shared.replaceTimelineCardsInRange(
-                    from: oneHourAgo,
+                    from: thirtyMinutesAgo,
                     to: currentTime,
                     with: cards.map { card in
                         TimelineCardShell(
@@ -337,7 +397,8 @@ final class LLMService: LLMServicing {
                             summary: card.summary,
                             detailedSummary: card.detailedSummary,
                             distractions: card.distractions,
-                            appSites: card.appSites
+                            appSites: card.appSites,
+                            isBackupGenerated: isBackupGenerated ? true : nil
                         )
                     },
                     batchId: batchId

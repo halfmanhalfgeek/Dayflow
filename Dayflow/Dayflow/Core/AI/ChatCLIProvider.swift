@@ -2,794 +2,11 @@
 //  ChatCLIProvider.swift
 //  Dayflow
 //
-//  Runs ChatGPT (Codex CLI) or Claude Code in headless mode.
-//  MCP servers are disabled dynamically via CLI flags.
-//  Uses the user's default auth from ~/.codex/ or ~/.claude/.
+//  High-level LLM provider that uses ChatCLIRunner for CLI execution.
 //
 
 import Foundation
 import AppKit
-import Darwin
-
-enum ChatCLITool: String, Codable {
-    case codex
-    case claude
-}
-
-// MARK: - Streaming Events
-
-/// Events emitted during JSONL streaming from CLI tools
-enum ChatStreamEvent: Sendable {
-    /// Session started with ID (for session persistence)
-    case sessionStarted(id: String)
-    /// Thinking/reasoning content (shown in collapsible UI)
-    case thinking(String)
-    /// Tool/command execution started
-    case toolStart(command: String)
-    /// Tool/command execution completed
-    case toolEnd(output: String, exitCode: Int?)
-    /// Incremental text chunk from response
-    case textDelta(String)
-    /// Final complete response
-    case complete(text: String)
-    /// Error occurred
-    case error(String)
-}
-
-// MARK: - Login Shell Runner
-// Unified utility for invoking CLI commands via the user's login shell.
-// This ensures we get the same PATH/environment the user has in Terminal.app.
-
-struct LoginShellResult {
-    let stdout: String
-    let stderr: String
-    let exitCode: Int32
-}
-
-/// Invokes commands via the user's login shell to replicate Terminal.app behavior.
-/// This ensures CLIs installed via nvm, homebrew, cargo, etc. are found.
-struct LoginShellRunner {
-
-    /// Detects the user's configured login shell (e.g., /bin/bash or /bin/zsh)
-    static var userLoginShell: URL {
-        if let entry = getpwuid(getuid()),
-           let shellPath = String(validatingUTF8: entry.pointee.pw_shell) {
-            return URL(fileURLWithPath: shellPath)
-        }
-        return URL(fileURLWithPath: "/bin/zsh")
-    }
-
-    /// Get names of all MCP servers configured in Codex CLI.
-    /// Used to generate `--config mcp_servers.<name>.enabled=false` flags.
-    static func getCodexMCPServerNames() -> [String] {
-        let result = run("codex mcp list --json", timeout: 10)
-        guard result.exitCode == 0,
-              let data = result.stdout.data(using: .utf8) else {
-            return []
-        }
-
-        // Parse JSON array of server objects with "name" field
-        struct MCPServer: Codable {
-            let name: String
-        }
-
-        guard let servers = try? JSONDecoder().decode([MCPServer].self, from: data) else {
-            return []
-        }
-
-        return servers.map { $0.name }
-    }
-
-    /// Run a command via login shell and wait for completion.
-    /// - Parameters:
-    ///   - command: The command to run (e.g., "claude --version")
-    ///   - environment: Additional environment variables to set INSIDE the shell command (immune to .zshrc overrides)
-    ///   - timeout: Maximum time to wait (default 30 seconds)
-    /// - Returns: The result containing stdout, stderr, and exit code
-    static func run(
-        _ command: String,
-        environment: [String: String] = [:],
-        timeout: TimeInterval = 30
-    ) -> LoginShellResult {
-        // Build env exports that happen AFTER shell init (immune to .zshrc overrides)
-        let envExports = environment.map { key, value in
-            "\(key)=\(shellEscape(value))"
-        }.joined(separator: " ")
-
-        let fullCommand = envExports.isEmpty ? command : "\(envExports) \(command)"
-
-        let process = Process()
-        // Dynamically use the user's actual shell (Bash, Zsh, etc.)
-        process.executableURL = userLoginShell
-        // -l = login shell (sources .bash_profile/.zprofile)
-        // -i = interactive (sources .bashrc/.zshrc)
-        process.arguments = ["-l", "-i", "-c", fullCommand]
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-        process.standardInput = FileHandle.nullDevice  // Prevent interactive prompts
-
-        do {
-            try process.run()
-        } catch {
-            return LoginShellResult(stdout: "", stderr: error.localizedDescription, exitCode: -1)
-        }
-
-        // Timeout handling
-        let semaphore = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async {
-            process.waitUntilExit()
-            semaphore.signal()
-        }
-
-        let result = semaphore.wait(timeout: .now() + timeout)
-        if result == .timedOut {
-            process.terminate()
-            return LoginShellResult(stdout: "", stderr: "Command timed out after \(Int(timeout))s", exitCode: -2)
-        }
-
-        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-
-        return LoginShellResult(stdout: stdout, stderr: stderr, exitCode: process.terminationStatus)
-    }
-
-    /// Check if a CLI tool is installed by running `tool --version`
-    static func isInstalled(_ toolName: String) -> Bool {
-        let result = run("\(toolName) --version", timeout: 10)
-        return result.exitCode == 0
-    }
-
-    /// Get version string of a CLI tool, or nil if not installed
-    static func version(of toolName: String) -> String? {
-        let result = run("\(toolName) --version", timeout: 10)
-        guard result.exitCode == 0 else { return nil }
-        let trimmed = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.components(separatedBy: .newlines).first ?? trimmed
-    }
-
-    /// Escape a string for safe inclusion in a shell command (single-quote escaping)
-    static func shellEscape(_ string: String) -> String {
-        // Remove null bytes that could truncate at C API boundary
-        let sanitized = string.replacingOccurrences(of: "\0", with: "")
-        // Single-quote escaping: replace ' with '\''
-        let escaped = sanitized.replacingOccurrences(of: "'", with: "'\\''")
-        return "'\(escaped)'"
-    }
-}
-
-private struct ChatCLIConfigManager {
-    static let shared = ChatCLIConfigManager()
-
-    /// Working directory for temporary files (e.g., resized images)
-    let workingDirectory: URL
-
-    private init() {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        workingDirectory = appSupport.appendingPathComponent("Dayflow/chatcli", isDirectory: true)
-    }
-
-    /// Ensure working directory exists for temp files
-    func ensureWorkingDirectory() {
-        let fm = FileManager.default
-        if !fm.fileExists(atPath: workingDirectory.path) {
-            try? fm.createDirectory(at: workingDirectory, withIntermediateDirectories: true)
-        }
-    }
-}
-
-private struct ChatCLIRunResult {
-    let exitCode: Int32
-    let stdout: String      // Parsed/cleaned response
-    let rawStdout: String   // Original stdout for thinking extraction
-    let stderr: String
-    let startedAt: Date
-    let finishedAt: Date
-    let usage: TokenUsage?
-}
-
-private struct TokenUsage: Sendable {
-    let input: Int
-    let cachedInput: Int
-    let output: Int
-
-    static var zero: TokenUsage { TokenUsage(input: 0, cachedInput: 0, output: 0) }
-
-    func adding(_ other: TokenUsage?) -> TokenUsage {
-        guard let other else { return self }
-        return TokenUsage(input: input + other.input, cachedInput: cachedInput + other.cachedInput, output: output + other.output)
-    }
-}
-
-// MARK: - Codex JSONL Event Parsing
-
-/// Codex `--json` outputs events like:
-/// {"type":"item.completed","item":{"type":"reasoning","text":"..."}}
-/// {"type":"item.started","item":{"type":"command_execution","command":"..."}}
-/// {"type":"item.completed","item":{"type":"command_execution","aggregated_output":"...","exit_code":0}}
-/// {"type":"item.completed","item":{"type":"agent_message","text":"..."}}
-private struct CodexJSONLEvent: Decodable {
-    let type: String  // "thread.started", "item.started", "item.completed", etc.
-    let thread_id: String?  // Present in "thread.started" event
-    let item: CodexItem?
-
-    struct CodexItem: Decodable {
-        let type: String  // "reasoning", "command_execution", "agent_message"
-        let text: String?
-        let command: String?
-        let status: String?
-        let aggregated_output: String?
-        let exit_code: Int?
-    }
-}
-
-// MARK: - Claude JSONL Event Parsing
-
-/// Claude `--output-format stream-json` outputs events like:
-/// {"type":"system","session_id":"..."}  (init event)
-/// {"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"..."}}}
-private struct ClaudeJSONLEvent: Decodable {
-    let type: String  // "system", "stream_event", "message_complete", etc.
-    let session_id: String?  // Present in "system" init event
-    let event: ClaudeEvent?
-    let result: String?
-
-    struct ClaudeEvent: Decodable {
-        let type: String  // "content_block_delta", "message_stop", etc.
-        let delta: ClaudeDelta?
-    }
-
-    struct ClaudeDelta: Decodable {
-        let type: String?  // "text_delta", "thinking_delta"
-        let text: String?
-        let thinking: String?
-    }
-
-}
-
-private struct ChatCLIProcessRunner {
-    private struct PseudoTerminal {
-        let master: FileHandle
-        let slaveFd: Int32
-    }
-
-    private func makePseudoTerminal() throws -> PseudoTerminal {
-        var master: Int32 = 0
-        var slave: Int32 = 0
-        let result = openpty(&master, &slave, nil, nil, nil)
-        guard result == 0 else {
-            throw NSError(domain: "ChatCLI", code: -50, userInfo: [
-                NSLocalizedDescriptionKey: "Failed to allocate pseudo-terminal for Claude streaming."
-            ])
-        }
-        let masterHandle = FileHandle(fileDescriptor: master, closeOnDealloc: true)
-        return PseudoTerminal(master: masterHandle, slaveFd: slave)
-    }
-
-    /// Run a streaming command, yielding events as JSONL lines arrive
-    /// - Parameter sessionId: Optional session ID to resume a previous conversation
-    func runStreaming(
-        tool: ChatCLITool,
-        prompt: String,
-        workingDirectory: URL,
-        model: String? = nil,
-        reasoningEffort: String? = nil,
-        sessionId: String? = nil
-    ) -> AsyncThrowingStream<ChatStreamEvent, Error> {
-        AsyncThrowingStream { continuation in
-            Task.detached {
-                do {
-                    try await self.executeStreaming(
-                        tool: tool,
-                        prompt: prompt,
-                        workingDirectory: workingDirectory,
-                        model: model,
-                        reasoningEffort: reasoningEffort,
-                        sessionId: sessionId,
-                        continuation: continuation
-                    )
-                } catch {
-                    continuation.yield(.error(error.localizedDescription))
-                    continuation.finish(throwing: error)
-                }
-            }
-        }
-    }
-
-    private func executeStreaming(
-        tool: ChatCLITool,
-        prompt: String,
-        workingDirectory: URL,
-        model: String?,
-        reasoningEffort: String?,
-        sessionId: String?,
-        continuation: AsyncThrowingStream<ChatStreamEvent, Error>.Continuation
-    ) async throws {
-        let toolName = tool.rawValue
-        let isResume = sessionId != nil
-
-        // Build command with streaming flags
-        var cmdParts: [String] = [toolName]
-        switch tool {
-        case .codex:
-            // For resume: codex exec resume <session_id> "prompt" --json
-            // For new: codex exec "prompt" --json
-            if let sessionId = sessionId {
-                cmdParts.append(contentsOf: ["exec", "resume", sessionId, "--skip-git-repo-check", "--json"])
-            } else {
-                cmdParts.append(contentsOf: ["exec", "--skip-git-repo-check", "--json"])
-            }
-            if let model = model { cmdParts.append(contentsOf: ["-m", model]) }
-            if let effort = reasoningEffort { cmdParts.append(contentsOf: ["-c", "model_reasoning_effort=\(effort)"]) }
-            // Disable MCP servers dynamically
-            let mcpServers = LoginShellRunner.getCodexMCPServerNames()
-            for serverName in mcpServers {
-                cmdParts.append(contentsOf: ["--config", "mcp_servers.\(serverName).enabled=false"])
-            }
-            cmdParts.append(contentsOf: ["-c", "rmcp_client=false", "-c", "features.web_search_request=false"])
-            cmdParts.append("--")
-            cmdParts.append(LoginShellRunner.shellEscape(prompt))
-
-        case .claude:
-            // For resume: claude -p --resume <session_id> "prompt"
-            // For new: claude -p "prompt"
-            cmdParts.append("-p")
-            cmdParts.append(contentsOf: ["--output-format", "stream-json"])
-            cmdParts.append("--include-partial-messages")
-            if let sessionId = sessionId {
-                cmdParts.append(contentsOf: ["--resume", sessionId])
-            }
-            if let model = model { cmdParts.append(contentsOf: ["--model", model]) }
-            cmdParts.append("--dangerously-skip-permissions")
-            cmdParts.append("--strict-mcp-config")
-            cmdParts.append("--")
-            cmdParts.append(LoginShellRunner.shellEscape(prompt))
-        }
-
-        if isResume {
-            print("[ChatCLI][streaming] Resuming session: \(sessionId!)")
-        }
-
-        let shellCommand = "cd \(LoginShellRunner.shellEscape(workingDirectory.path)) && exec \(cmdParts.joined(separator: " "))"
-        let shell = LoginShellRunner.userLoginShell
-
-        print("[ChatCLI][streaming] \(toolName) command: \(shell.path) -l -i -c '\(shellCommand)'")
-
-        let process = Process()
-        process.executableURL = shell
-        process.arguments = ["-l", "-i", "-c", shellCommand]
-        var cleanupPty: (() -> Void)?
-        let stdoutHandle: FileHandle
-        if tool == .claude {
-            let pty = try makePseudoTerminal()
-            stdoutHandle = pty.master
-            let slaveHandle = FileHandle(fileDescriptor: pty.slaveFd, closeOnDealloc: false)
-            process.standardInput = slaveHandle
-            process.standardOutput = slaveHandle
-            cleanupPty = {
-                close(pty.slaveFd)
-            }
-        } else {
-            let stdoutPipe = Pipe()
-            process.standardOutput = stdoutPipe
-            process.standardInput = FileHandle.nullDevice
-            stdoutHandle = stdoutPipe.fileHandleForReading
-        }
-
-        let stderrPipe = Pipe()
-        process.standardError = stderrPipe
-
-        // Accumulate response text for final event
-        var accumulatedText = ""
-        var lineBuffer = Data()
-        var sawTextDelta = false
-        var didYieldComplete = false
-
-        // Set up stdout handler for line-by-line JSONL parsing
-        stdoutHandle.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-
-            lineBuffer.append(data)
-
-            // Process complete lines
-            while let newlineRange = lineBuffer.range(of: Data([0x0A])) {
-                let lineData = lineBuffer.subdata(in: 0..<newlineRange.lowerBound)
-                lineBuffer.removeSubrange(0...newlineRange.lowerBound)
-
-                guard let rawLine = String(data: lineData, encoding: .utf8) else { continue }
-                let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-                let line = self.stripANSIEscapes(trimmed)
-                guard !line.isEmpty else { continue }
-
-                // Parse JSONL event based on tool
-                if let event = self.parseJSONLLine(tool: tool, line: line) {
-                    // Track accumulated text for textDelta events
-                    if case .textDelta(let text) = event {
-                        sawTextDelta = true
-                        accumulatedText += text
-                    } else if case .complete(let text) = event {
-                        if sawTextDelta || didYieldComplete {
-                            continue
-                        }
-                        didYieldComplete = true
-                        accumulatedText = text
-                    }
-                    continuation.yield(event)
-                }
-            }
-        }
-
-        try process.run()
-
-        // Wait for process completion
-        process.waitUntilExit()
-
-        // Clean up handlers
-        stdoutHandle.readabilityHandler = nil
-        cleanupPty?()
-
-        // Process any remaining buffered data
-        if !lineBuffer.isEmpty,
-           let rawLine = String(data: lineBuffer, encoding: .utf8) {
-            let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-            let line = stripANSIEscapes(trimmed)
-            if !line.isEmpty, let event = parseJSONLLine(tool: tool, line: line) {
-                var shouldYield = true
-                if case .textDelta(let text) = event {
-                    sawTextDelta = true
-                    accumulatedText += text
-                } else if case .complete(let text) = event {
-                    if sawTextDelta || didYieldComplete {
-                        shouldYield = false
-                    } else {
-                        didYieldComplete = true
-                        accumulatedText = text
-                    }
-                }
-                if shouldYield {
-                    continuation.yield(event)
-                }
-            }
-        }
-
-        // Check exit status
-        if process.terminationStatus != 0 {
-            let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            if stderr.contains("command not found") {
-                continuation.yield(.error("\(toolName) CLI not found. Please install it and run '\(tool == .codex ? "codex auth" : "claude login")' in Terminal."))
-            } else if !stderr.isEmpty {
-                continuation.yield(.error(stderr))
-            }
-        }
-
-        // Yield final complete event if we accumulated text
-        if !accumulatedText.isEmpty, !didYieldComplete {
-            continuation.yield(.complete(text: accumulatedText))
-        }
-
-        continuation.finish()
-    }
-
-    /// Parse a single JSONL line into a ChatStreamEvent
-    private func parseJSONLLine(tool: ChatCLITool, line: String) -> ChatStreamEvent? {
-        guard let data = line.data(using: .utf8) else { return nil }
-
-        switch tool {
-        case .codex:
-            return parseCodexEvent(data)
-        case .claude:
-            return parseClaudeEvent(data)
-        }
-    }
-
-    private func parseCodexEvent(_ data: Data) -> ChatStreamEvent? {
-        guard let event = try? JSONDecoder().decode(CodexJSONLEvent.self, from: data) else { return nil }
-
-        // Handle thread.started event (session init)
-        if event.type == "thread.started", let threadId = event.thread_id {
-            return .sessionStarted(id: threadId)
-        }
-
-        guard let item = event.item else { return nil }
-
-        switch item.type {
-        case "reasoning":
-            if let text = item.text, !text.isEmpty {
-                return .thinking(text)
-            }
-
-        case "command_execution":
-            if event.type == "item.started", let command = item.command {
-                return .toolStart(command: command)
-            } else if event.type == "item.completed" {
-                let output = item.aggregated_output ?? ""
-                return .toolEnd(output: output, exitCode: item.exit_code)
-            }
-
-        case "agent_message":
-            if let text = item.text, !text.isEmpty {
-                return .textDelta(text)
-            }
-
-        default:
-            break
-        }
-
-        return nil
-    }
-
-    private func parseClaudeEvent(_ data: Data) -> ChatStreamEvent? {
-        guard let event = try? JSONDecoder().decode(ClaudeJSONLEvent.self, from: data) else { return nil }
-
-        // Handle system init event (session start)
-        if event.type == "system", let sessionId = event.session_id {
-            return .sessionStarted(id: sessionId)
-        }
-
-        // Handle stream events
-        if event.type == "stream_event", let streamEvent = event.event {
-            if streamEvent.type == "content_block_delta", let delta = streamEvent.delta {
-                // Thinking delta
-                if delta.type == "thinking_delta", let thinking = delta.thinking, !thinking.isEmpty {
-                    return .thinking(thinking)
-                }
-                // Text delta
-                if delta.type == "text_delta", let text = delta.text, !text.isEmpty {
-                    return .textDelta(text)
-                }
-            }
-        }
-
-        if event.type == "result", let result = event.result, !result.isEmpty {
-            return .complete(text: result)
-        }
-
-        return nil
-    }
-
-    private func stripANSIEscapes(_ input: String) -> String {
-        var output = ""
-        var index = input.startIndex
-        while index < input.endIndex {
-            let ch = input[index]
-            if ch == "\u{1B}" {
-                var cursor = input.index(after: index)
-                if cursor < input.endIndex, input[cursor] == "[" {
-                    cursor = input.index(after: cursor)
-                    while cursor < input.endIndex {
-                        let scalar = input[cursor].unicodeScalars.first
-                        if let scalar, scalar.value >= 0x40 && scalar.value <= 0x7E {
-                            cursor = input.index(after: cursor)
-                            break
-                        }
-                        cursor = input.index(after: cursor)
-                    }
-                    index = cursor
-                    continue
-                }
-            }
-            output.append(ch)
-            index = input.index(after: index)
-        }
-        return output
-    }
-
-    // Extract final assistant text from CLI output.
-    // Codex outputs: thinking blocks, exec blocks, then "codex\n<response>\ntokens used\n..."
-    private func parseAssistant(tool: ChatCLITool, raw: String) -> (text: String, usage: TokenUsage?) {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        // For Codex, extract just the final response after "codex\n"
-        if tool == .codex {
-            // Find the last occurrence of "codex\n" which marks the final response
-            if let codexRange = trimmed.range(of: "\ncodex\n", options: .backwards) {
-                var response = String(trimmed[codexRange.upperBound...])
-                // Remove "tokens used" footer if present
-                if let tokensRange = response.range(of: "\ntokens used", options: .caseInsensitive) {
-                    response = String(response[..<tokensRange.lowerBound])
-                }
-                return (response.trimmingCharacters(in: .whitespacesAndNewlines), nil)
-            }
-        }
-
-        return (trimmed, nil)
-    }
-
-    /// Extract thinking blocks from Codex stdout (between "thinking\n" markers)
-    func parseThinkingFromOutput(_ output: String) -> String? {
-        var thinkingParts: [String] = []
-        let lines = output.components(separatedBy: .newlines)
-        var inThinking = false
-        var currentThinking: [String] = []
-
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed == "thinking" {
-                if inThinking && !currentThinking.isEmpty {
-                    thinkingParts.append(currentThinking.joined(separator: " "))
-                    currentThinking = []
-                }
-                inThinking = !inThinking
-            } else if inThinking && !trimmed.isEmpty && !trimmed.hasPrefix("exec") && !trimmed.hasPrefix("/bin") {
-                // Clean up markdown bold markers
-                let cleaned = trimmed.replacingOccurrences(of: "**", with: "")
-                currentThinking.append(cleaned)
-            }
-        }
-
-        if !currentThinking.isEmpty {
-            thinkingParts.append(currentThinking.joined(separator: " "))
-        }
-
-        guard !thinkingParts.isEmpty else { return nil }
-        return thinkingParts.joined(separator: " → ")
-    }
-
-    private func promptWithImageHints(prompt: String, imagePaths: [String]) -> String {
-        guard !imagePaths.isEmpty else { return prompt }
-        let hints = imagePaths.map { "- " + $0 }.joined(separator: "\n")
-        return prompt + "\nImages:\n" + hints
-    }
-
-    func run(tool: ChatCLITool, prompt: String, workingDirectory: URL, imagePaths: [String] = [], model: String? = nil, reasoningEffort: String? = nil, disableTools: Bool = false) throws -> ChatCLIRunResult {
-        let toolName = tool.rawValue  // "codex" or "claude"
-
-        // Build the command exactly as user would type in Terminal
-        var cmdParts: [String] = [toolName]
-        switch tool {
-        case .codex:
-            cmdParts.append(contentsOf: ["exec", "--skip-git-repo-check"])
-            if let model = model { cmdParts.append(contentsOf: ["-m", model]) }
-            if let effort = reasoningEffort { cmdParts.append(contentsOf: ["-c", "model_reasoning_effort=\(effort)"]) }
-            // Disable MCP servers dynamically by detecting all configured servers
-            let mcpServers = LoginShellRunner.getCodexMCPServerNames()
-            for serverName in mcpServers {
-                cmdParts.append(contentsOf: ["--config", "mcp_servers.\(serverName).enabled=false"])
-            }
-            // Also disable rmcp_client and web search
-            cmdParts.append(contentsOf: ["-c", "rmcp_client=false", "-c", "features.web_search_request=false"])
-            for path in imagePaths { cmdParts.append(contentsOf: ["--image", LoginShellRunner.shellEscape(path)]) }
-            cmdParts.append("--")
-            cmdParts.append(LoginShellRunner.shellEscape(prompt))
-        case .claude:
-            cmdParts.append("-p")
-            if let model = model { cmdParts.append(contentsOf: ["--model", model]) }
-            // For chat mode, disable all tools to force the LLM to use our JSON tool format
-            if disableTools {
-                // Pass empty array to --allowedTools to disable all built-in tools
-                cmdParts.append("--allowedTools")
-                cmdParts.append(LoginShellRunner.shellEscape("[]"))
-            } else {
-                cmdParts.append("--dangerously-skip-permissions")
-            }
-            cmdParts.append("--strict-mcp-config")
-            cmdParts.append("--")
-            cmdParts.append(LoginShellRunner.shellEscape(promptWithImageHints(prompt: prompt, imagePaths: imagePaths)))
-        }
-
-        // Use `exec` to replace shell process (ensures terminate() kills the CLI, not just zsh)
-        // No sandbox - use default ~/.codex/ or ~/.claude/ auth
-        let shellCommand = "cd \(LoginShellRunner.shellEscape(workingDirectory.path)) && exec \(cmdParts.joined(separator: " "))"
-
-        let shell = LoginShellRunner.userLoginShell
-        debugCommand(tool: tool, model: model, shell: shell, shellCommand: shellCommand)
-
-        let started = Date()
-        let process = Process()
-        // Dynamically use the user's actual shell (Bash, Zsh, etc.)
-        process.executableURL = shell
-        // -l = login shell (sources .bash_profile/.zprofile)
-        // -i = interactive (sources .bashrc/.zshrc)
-        process.arguments = ["-l", "-i", "-c", shellCommand]
-
-        var cleanupPty: (() -> Void)?
-        let stdoutHandle: FileHandle
-        if tool == .claude {
-            let pty = try makePseudoTerminal()
-            stdoutHandle = pty.master
-            let slaveHandle = FileHandle(fileDescriptor: pty.slaveFd, closeOnDealloc: false)
-            process.standardInput = slaveHandle
-            process.standardOutput = slaveHandle
-            cleanupPty = {
-                close(pty.slaveFd)
-            }
-        } else {
-            let stdoutPipe = Pipe()
-            process.standardOutput = stdoutPipe
-            process.standardInput = FileHandle.nullDevice  // Prevent interactive prompts
-            stdoutHandle = stdoutPipe.fileHandleForReading
-        }
-
-        let stderrPipe = Pipe()
-        process.standardError = stderrPipe
-
-        try process.run()
-
-        let outputQueue = DispatchQueue(label: "ChatCLI.Output")
-        var stdoutBuffer = Data()
-        var stderrBuffer = Data()
-
-        stdoutHandle.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-            outputQueue.sync {
-                stdoutBuffer.append(data)
-            }
-        }
-        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-            outputQueue.sync {
-                stderrBuffer.append(data)
-            }
-        }
-
-        // 5-minute timeout to prevent indefinite hangs
-        let timeoutSeconds: TimeInterval = 300
-        let semaphore = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async {
-            process.waitUntilExit()
-            semaphore.signal()
-        }
-        let result = semaphore.wait(timeout: .now() + timeoutSeconds)
-        if result == .timedOut {
-            process.terminate()
-            throw NSError(domain: "ChatCLI", code: -3, userInfo: [NSLocalizedDescriptionKey: "CLI process timed out after \(Int(timeoutSeconds)) seconds"])
-        }
-        let finished = Date()
-
-        cleanupPty?()
-        stdoutHandle.readabilityHandler = nil
-        stderrPipe.fileHandleForReading.readabilityHandler = nil
-        outputQueue.sync { }
-        let remainingStdout = stdoutHandle.readDataToEndOfFile()
-        let remainingStderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        outputQueue.sync {
-            if !remainingStdout.isEmpty {
-                stdoutBuffer.append(remainingStdout)
-            }
-            if !remainingStderr.isEmpty {
-                stderrBuffer.append(remainingStderr)
-            }
-        }
-
-        var rawOut = String(data: stdoutBuffer, encoding: .utf8) ?? ""
-        if tool == .claude {
-            rawOut = stripANSIEscapes(rawOut)
-        }
-        let stderr = String(data: stderrBuffer, encoding: .utf8) ?? ""
-
-        // Check for "command not found" to give user-friendly error
-        // Only check stderr if exit code indicates failure (avoids false positives from unrelated .zshrc errors)
-        if process.terminationStatus == 127 || (process.terminationStatus != 0 && stderr.contains("command not found")) {
-            throw NSError(domain: "ChatCLI", code: -2, userInfo: [
-                NSLocalizedDescriptionKey: "\(toolName) CLI not found. Please install it and run '\(tool == .codex ? "codex auth" : "claude login")' in Terminal."
-            ])
-        }
-
-        let parsed = parseAssistant(tool: tool, raw: rawOut)
-        debugLog(tool: tool, model: model, phase: "run", prompt: prompt, stdout: rawOut, stderr: stderr, usage: parsed.usage)
-        return ChatCLIRunResult(exitCode: process.terminationStatus, stdout: parsed.text, rawStdout: rawOut, stderr: stderr, startedAt: started, finishedAt: finished, usage: parsed.usage)
-    }
-
-    private func debugCommand(tool: ChatCLITool, model: String?, shell: URL, shellCommand: String) {
-        let header = "[ChatCLI][\(tool.rawValue)][\(model ?? "")] command"
-        print("\(header): \(shell.path) -l -i -c '\(shellCommand)'")
-    }
-
-    private func debugLog(tool: ChatCLITool, model: String?, phase: String, prompt: String, stdout: String, stderr: String, usage: TokenUsage?) {
-        let header = "[ChatCLI][\(tool.rawValue)][\(model ?? "")] \(phase)"
-        print("\(header) prompt:\n\(prompt)")
-        if !stdout.isEmpty { print("\(header) stdout:\n\(stdout)") }
-        if !stderr.isEmpty { print("\(header) stderr:\n\(stderr)") }
-        if let u = usage {
-            print("\(header) usage in=\(u.input) cached=\(u.cachedInput) out=\(u.output)")
-        }
-    }
-}
 
 private struct ChatCLIObservationsEnvelope: Codable {
     struct Item: Codable {
@@ -824,8 +41,6 @@ final class ChatCLIProvider {
     private let tool: ChatCLITool
     private let runner = ChatCLIProcessRunner()
     private let config = ChatCLIConfigManager.shared
-    /// Screenshot interval used for fallback observation duration calculation
-    private let screenshotInterval: TimeInterval = 10.0
 
     init(tool: ChatCLITool) {
         self.tool = tool
@@ -840,6 +55,59 @@ final class ChatCLIProvider {
             cleanupImages()
         }
         return try runner.run(tool: tool, prompt: prompt, workingDirectory: config.workingDirectory, imagePaths: preparedImages, model: model, reasoningEffort: reasoningEffort, disableTools: disableTools)
+    }
+
+    private func runStreamingAndCollect(prompt: String, model: String?, reasoningEffort: String?, sessionId: String?) async throws -> (run: ChatCLIRunResult, sessionId: String?) {
+        let started = Date()
+        var collectedText = ""
+        var sawTextDelta = false
+        var capturedSessionId = sessionId
+
+        let stream = runner.runStreaming(
+            tool: tool,
+            prompt: prompt,
+            workingDirectory: config.workingDirectory,
+            model: model,
+            reasoningEffort: reasoningEffort,
+            sessionId: sessionId
+        )
+
+        do {
+            for try await event in stream {
+                switch event {
+                case .sessionStarted(let id):
+                    if capturedSessionId == nil {
+                        capturedSessionId = id
+                    }
+                case .textDelta(let chunk):
+                    sawTextDelta = true
+                    collectedText += chunk
+                case .complete(let text):
+                    if !sawTextDelta {
+                        collectedText = text
+                    }
+                case .error(let message):
+                    throw NSError(domain: "ChatCLI", code: -4, userInfo: [NSLocalizedDescriptionKey: message])
+                default:
+                    break
+                }
+            }
+        } catch {
+            throw error
+        }
+
+        let finished = Date()
+        let run = ChatCLIRunResult(
+            exitCode: 0,
+            stdout: collectedText,
+            rawStdout: collectedText,
+            stderr: "",
+            startedAt: started,
+            finishedAt: finished,
+            usage: nil
+        )
+
+        return (run, capturedSessionId)
     }
 
     /// Create temporary 720p-max copies of images for Codex/Claude CLI.
@@ -955,17 +223,20 @@ final class ChatCLIProvider {
             effort = nil
         case .codex:
             model = "gpt-5.2"
-            effort = "high"
+            effort = "medium"
         }
 
         var lastError: Error?
         var lastRun: ChatCLIRunResult?
         var lastRawOutput: String = ""
         var parsedCards: [ActivityCardData] = []
+        var sessionId: String? = nil
 
-        for attempt in 1...4 {
+        for attempt in 1...3 {
             do {
-                let run = try runAndScrub(prompt: actualPromptUsed, model: model, reasoningEffort: effort)
+                let runResult = try await runStreamingAndCollect(prompt: actualPromptUsed, model: model, reasoningEffort: effort, sessionId: sessionId)
+                let run = runResult.run
+                sessionId = runResult.sessionId
                 lastRun = run
                 lastRawOutput = run.stdout
                 let cards = try parseCards(from: run.stdout)
@@ -978,7 +249,7 @@ final class ChatCLIProvider {
                 if coverageValid && durationValid {
                     parsedCards = normalizedCards
                     let finishedAt = run.finishedAt
-                    logSuccess(ctx: makeCtx(batchId: batchId, operation: "generate_cards", startedAt: callStart), finishedAt: finishedAt, stdout: run.stdout, stderr: run.stderr, responseHeaders: tokenHeaders(from: run.usage))
+                    logSuccess(ctx: makeCtx(batchId: batchId, operation: "generate_cards", startedAt: callStart, attempt: attempt), finishedAt: finishedAt, stdout: run.stdout, stderr: run.stderr, responseHeaders: tokenHeaders(from: run.usage))
                     let llmCall = makeLLMCall(start: callStart, end: finishedAt, input: actualPromptUsed, output: run.stdout)
                     return (parsedCards, llmCall)
                 }
@@ -1011,18 +282,23 @@ final class ChatCLIProvider {
                 }
                 let combinedError = errorMessages.joined(separator: "\n\n")
                 lastError = CardParseError.validationFailed(details: combinedError, rawOutput: run.stdout)
-                actualPromptUsed = basePrompt + "\n\nPREVIOUS ATTEMPT FAILED - CRITICAL REQUIREMENTS NOT MET:\n\n" + combinedError + "\n\nPlease fix these issues and ensure your output meets all requirements."
+                if sessionId == nil {
+                    actualPromptUsed = basePrompt + "\n\nPREVIOUS ATTEMPT FAILED - CRITICAL REQUIREMENTS NOT MET:\n\n" + combinedError + "\n\nPlease fix these issues and ensure your output meets all requirements."
+                } else {
+                    actualPromptUsed = buildCardsCorrectionPrompt(validationError: combinedError)
+                }
                 print("[ChatCLI] generate_cards validation failed (attempt " + String(attempt) + "): " + combinedError)
             } catch {
                 lastError = error
                 print("[ChatCLI] generate_cards attempt " + String(attempt) + " failed: " + error.localizedDescription + " — retrying")
                 actualPromptUsed = basePrompt
+                sessionId = nil
             }
         }
 
         let finishedAt = lastRun?.finishedAt ?? Date()
         let finalError = lastError ?? CardParseError.decodeFailure(rawOutput: lastRawOutput)
-        logFailure(ctx: makeCtx(batchId: batchId, operation: "generate_cards", startedAt: callStart), finishedAt: finishedAt, error: finalError, stdout: lastRawOutput, stderr: lastRun?.stderr)
+        logFailure(ctx: makeCtx(batchId: batchId, operation: "generate_cards", startedAt: callStart, attempt: 3), finishedAt: finishedAt, error: finalError, stdout: lastRawOutput, stderr: lastRun?.stderr)
         throw finalError
     }
 
@@ -1049,7 +325,7 @@ final class ChatCLIProvider {
         You are synthesizing a user's activity log into timeline cards. Each card represents one main thing they did.
 
         CORE PRINCIPLE:
-        Each card = one coherent activity. Time is a constraint (10-60 min), not a goal. Don't stuff unrelated activities into one card just to fill time.
+        Each card = one coherent activity. Time is a constraint (10-60 min), not a goal. 
 
         SPLITTING RULES:
         - Minimum card length: 10 minutes
@@ -1083,15 +359,34 @@ final class ChatCLIProvider {
         """ + categoriesSectionText + """
 
 
-        APP SITES
+        APP SITES (Website Logos)
 
-        Identify primary and secondary apps/sites used.
+        Identify the main app or website used for each card. Output the canonical DOMAIN, not the app name.
 
         Rules:
-        - primary: main app for the card
-        - secondary: another meaningful app OR the enclosing app (browser) if relevant
-        - Use canonical domains: figma.com, notion.so, docs.google.com, x.com, mail.google.com
-        - Be specific: docs.google.com not google.com
+        - primary: The canonical domain of the main app/website used in the card.
+        - secondary: Another meaningful app used during this session, if relevant.
+        - Format: lower-case, no protocol, no query or fragments.
+        - Use product subdomains/paths when canonical (e.g., docs.google.com for Google Docs).
+        - Be specific: prefer product domains over generic ones (docs.google.com over google.com).
+        - If you cannot determine a secondary, omit it.
+        - Do not invent brands; rely on evidence from observations.
+
+        Canonical examples (app → domain):
+        - Figma → figma.com
+        - Notion → notion.so
+        - Google Docs → docs.google.com
+        - Gmail → mail.google.com
+        - VS Code → code.visualstudio.com
+        - Xcode → developer.apple.com/xcode
+        - Slack → slack.com
+        - Twitter/X → x.com
+        - Messages → support.apple.com/messages
+        - Terminal → omit (no canonical domain)
+
+        ✗ WRONG: "primary": "Messages" (app name, not a domain)
+        ✗ WRONG: "primary": "Ghostty IDE" (app name, not a domain)
+        ✓ CORRECT: "primary": "figma.com", "secondary": "notion.so"
 
         DECISION PROCESS
 
@@ -1141,36 +436,23 @@ final class ChatCLIProvider {
         """
     }
 
-    // MARK: - Parsing
+    private func buildCardsCorrectionPrompt(validationError: String) -> String {
+        """
+        The previous JSON output has validation errors. Fix the existing output using the context from our ongoing conversation.
 
-    private func parseObservations(from output: String, batchId: Int64?, batchStartTime: Date) -> [Observation] {
-        guard let data = output.data(using: .utf8),
-              let envelope = try? JSONDecoder().decode(ChatCLIObservationsEnvelope.self, from: data) else {
-            return []
-        }
-        return envelope.observations.compactMap { item in
-            let startSeconds = TimeInterval(parseVideoTimestamp(item.start))
-            let endSeconds = TimeInterval(parseVideoTimestamp(item.end))
-            guard endSeconds > startSeconds else { return nil }
+        Issues:
+        \(validationError)
 
-            let startDate = batchStartTime.addingTimeInterval(startSeconds)
-            let endDate = batchStartTime.addingTimeInterval(endSeconds)
-
-            let startEpoch = Int(startDate.timeIntervalSince1970)
-            let endEpoch = max(startEpoch + 1, Int(endDate.timeIntervalSince1970))
-
-            return Observation(
-                id: nil,
-                batchId: batchId ?? -1,
-                startTs: startEpoch,
-                endTs: endEpoch,
-                observation: item.text,
-                metadata: nil,
-                llmModel: tool.rawValue,
-                createdAt: Date()
-            )
-        }
+        Requirements:
+        - Return the FULL corrected JSON output (not a diff).
+        - Preserve the same overall time coverage: no gaps or overlaps.
+        - Each card must be 10-60 minutes, except the final card may be shorter.
+        - If a mid-card is too short, merge it with an adjacent card and update title/summary accordingly.
+        - Output JSON only. No code fences or extra text.
+        """
     }
+
+    // MARK: - Parsing
 
     private func parseCards(from output: String) throws -> [ActivityCardData] {
         guard let data = output.data(using: .utf8) else {
@@ -1262,22 +544,6 @@ final class ChatCLIProvider {
         throw NSError(domain: "ChatCLI", code: -32, userInfo: [NSLocalizedDescriptionKey: "Failed to decode activity cards"])
     }
 
-    // MARK: - Frame processing and merging
-
-    private struct FrameData {
-        let timestamp: TimeInterval
-        let path: String
-    }
-
-    private struct FrameDescriptionResponse: Codable {
-        let description: String
-    }
-
-    private struct FrameDescriptionsEnvelope: Codable {
-        struct Item: Codable { let index: Int; let description: String }
-        let frames: [Item]
-    }
-
     private struct SegmentMergeResponse: Codable {
         struct Segment: Codable {
             let start: String
@@ -1285,342 +551,6 @@ final class ChatCLIProvider {
             let description: String
         }
         let segments: [Segment]
-    }
-
-    private func describeFramesBatch(_ frames: [FrameData], overrideModel: String? = nil, overrideEffort: String? = nil) throws -> ([(FrameData, String)], TokenUsage?) {
-        guard !frames.isEmpty else { return ([], nil) }
-
-        let prompt = """
-        You will see multiple computer screen snapshots attached in the order provided.
-        Describe what you see on this computer screen in 1-2 sentences.
-        Focus on: what application/site is open, what the user is doing, and any relevant details visible.
-        Be specific and factual.
-        
-        GOOD EXAMPLES:
-        ✓ "VS Code open with index.js file, writing a React component for user authentication."
-        ✓ "Gmail compose window writing email to client@company.com about project timeline."
-        ✓ "Slack conversation in #engineering channel discussing API rate limiting issues."
-        
-        BAD EXAMPLES:
-        ✗ "User is coding" (too vague)
-        ✗ "Looking at a website" (doesn't identify which site)
-        ✗ "Working on computer" (completely non-specific)
-        Reply ONLY with JSON: {"frames":[{"index":1,"description":"<one sentence about the visible activity/app/site>"}]}.
-        Include one entry per image in the same order (1 = first image you received). No prose, no extra keys.
-        
-        """
-
-        let model: String
-        let effort: String?
-        if let overrideModel {
-            model = overrideModel
-            effort = overrideEffort
-        } else {
-            switch tool {
-            case .claude:
-                model = "haiku"
-                effort = nil
-            case .codex:
-                model = "gpt-5.2"
-                effort = "low"
-            }
-        }
-
-        let run = try runAndScrub(prompt: prompt, imagePaths: frames.map { $0.path }, model: model, reasoningEffort: effort)
-
-        // Full, untrimmed logs for debugging
-        print("\n[ChatCLI][describeFramesBatch] model=\(model) effort=\(effort ?? "default") frames=\(frames.count)")
-        print("[ChatCLI][describeFramesBatch] stdout:\n\(run.stdout)")
-        if !run.stderr.isEmpty {
-            print("[ChatCLI][describeFramesBatch] stderr:\n\(run.stderr)")
-        }
-        guard run.exitCode == 0 else {
-            throw NSError(domain: "ChatCLI", code: Int(run.exitCode), userInfo: [
-                NSLocalizedDescriptionKey: "CLI exited with code \(run.exitCode). stdout: \(run.stdout) | stderr: \(run.stderr)"
-            ])
-        }
-
-        // Try strict JSON decode first
-        if let data = run.stdout.data(using: .utf8),
-           let parsed = try? JSONDecoder().decode(FrameDescriptionsEnvelope.self, from: data),
-           !parsed.frames.isEmpty {
-            var results: [(FrameData, String)] = []
-            for (idx, frame) in frames.enumerated() {
-                if let match = parsed.frames.first(where: { $0.index == idx + 1 }) {
-                    let desc = match.description.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !desc.isEmpty { results.append((frame, desc)) }
-                }
-            }
-            if !results.isEmpty { return (results, run.usage) }
-        }
-
-        // Fallback: try to strip code fences and decode again
-        let stripped = run.stdout.replacingOccurrences(of: "```json", with: "").replacingOccurrences(of: "```", with: "")
-        if let data = stripped.data(using: .utf8),
-           let parsed = try? JSONDecoder().decode(FrameDescriptionsEnvelope.self, from: data),
-           !parsed.frames.isEmpty {
-            var results: [(FrameData, String)] = []
-            for (idx, frame) in frames.enumerated() {
-                if let match = parsed.frames.first(where: { $0.index == idx + 1 }) {
-                    let desc = match.description.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !desc.isEmpty { results.append((frame, desc)) }
-                }
-            }
-            if !results.isEmpty { return (results, run.usage) }
-        }
-
-        // Last resort: split lines -> descriptions by order
-        var results: [(FrameData, String)] = []
-        let lines = run.stdout.split(whereSeparator: { $0.isNewline })
-        for (idx, frame) in frames.enumerated() {
-            if idx < lines.count {
-                let desc = String(lines[idx]).trimmingCharacters(in: .whitespacesAndNewlines)
-                if !desc.isEmpty { results.append((frame, desc)) }
-            }
-        }
-
-        // If we still have no results after all parsing attempts, throw with the raw output
-        guard !results.isEmpty else {
-            // Capture richer diagnostics to PostHog so we can debug Codex vs Claude failures
-            let fullStdout = run.stdout
-            let fullStderr = run.stderr
-
-            Task { @MainActor in
-                AnalyticsService.shared.capture("llm_cli_failure", [
-                    "provider": "chat_cli",
-                    "model": tool.rawValue,
-                    "operation": "describe_frames",
-                    "error_message": "Failed to parse frame descriptions",
-                    "stdout_preview": fullStdout,
-                    "stderr_preview": fullStderr
-                ])
-            }
-
-            throw NSError(domain: "ChatCLI", code: -98, userInfo: [
-                NSLocalizedDescriptionKey: "Failed to parse frame descriptions. Raw stdout: \(fullStdout)\nRaw stderr: \(fullStderr)"
-            ])
-        }
-
-        return (results, run.usage)
-    }
-
-    private func mergeFrameDescriptionsWithCLI(_ frames: [(timestamp: TimeInterval, description: String)],
-                                               batchStartTime: Date,
-                                               videoDuration: TimeInterval,
-                                               batchId: Int64?,
-                                               callStart: Date) throws -> (observations: [Observation], usage: TokenUsage?, rawOutput: String) {
-        let logPrefix = "[ChatCLI][merge]"
-        let timeFormatter = DateFormatter()
-        timeFormatter.dateFormat = "h:mm:ss a"
-        timeFormatter.locale = Locale(identifier: "en_US_POSIX")
-        timeFormatter.timeZone = TimeZone.current
-
-        guard !frames.isEmpty else {
-            print("\(logPrefix) ⚠️ No frames to merge, returning empty")
-            return ([], nil, "")
-        }
-
-        // === INPUT LOGGING ===
-        print("\n\(logPrefix) ═══════════════════════════════════════════════════════")
-        print("\(logPrefix) 📥 INPUT:")
-        print("\(logPrefix)   batchId: \(batchId ?? -1)")
-        print("\(logPrefix)   batchStartTime: \(timeFormatter.string(from: batchStartTime)) (epoch: \(Int(batchStartTime.timeIntervalSince1970)))")
-        print("\(logPrefix)   videoDuration: \(formatSeconds(videoDuration)) (\(Int(videoDuration)) seconds)")
-        print("\(logPrefix)   frameCount: \(frames.count)")
-        print("\(logPrefix)   frames:")
-        for (i, frame) in frames.enumerated() {
-            let frameTime = batchStartTime.addingTimeInterval(frame.timestamp)
-            print("\(logPrefix)     [\(i)] \(formatSeconds(frame.timestamp)) → \(timeFormatter.string(from: frameTime)): \(frame.description.prefix(80))...")
-        }
-
-        let durationString = formatSeconds(videoDuration)
-        let lines = frames.map { "- " + formatSeconds($0.timestamp) + ": " + $0.description }.joined(separator: "\n")
-        let prompt = "You are given timestamped screen descriptions from a video (" + durationString + ").\n" +
-            "Produce 2-5 segments that cover the video. Respond ONLY with JSON:\n" +
-            "{\"segments\":[{\"start\":\"HH:MM:SS\",\"end\":\"HH:MM:SS\",\"description\":\"...\"}]}\n" +
-            "Rules:\n" +
-            "- Segments must be in order, non-overlapping, within 00:00:00-" + durationString + ".\n" +
-            "- Cover at least 80% of the timeline; merge short gaps.\n" +
-            "- No text outside the JSON.\n" +
-            "Snapshots:\n" + lines
-
-        let model: String
-        let effort: String?
-        switch tool {
-        case .claude:
-            model = "sonnet"
-            effort = nil
-        case .codex:
-            model = "gpt-5.2"
-            effort = "low"
-        }
-
-        print("\(logPrefix) 🤖 Calling LLM (model: \(model), effort: \(effort ?? "default"))...")
-        let run = try runAndScrub(prompt: prompt, model: model, reasoningEffort: effort)
-
-        // === LLM OUTPUT LOGGING ===
-        print("\(logPrefix) 📤 LLM OUTPUT:")
-        print("\(logPrefix)   exitCode: \(run.exitCode)")
-        print("\(logPrefix)   stdout: \(run.stdout)")
-        if !run.stderr.isEmpty {
-            print("\(logPrefix)   stderr: \(run.stderr)")
-        }
-
-        // Strip markdown code fences that Claude often adds
-        let cleanOutput = run.stdout
-            .replacingOccurrences(of: "```json", with: "")
-            .replacingOccurrences(of: "```", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard run.exitCode == 0 else {
-            print("\(logPrefix) ⚠️ LLM failed (exitCode: \(run.exitCode)), using fallback")
-            return (fallbackObservations(frames: frames, batchId: batchId, batchStartTime: batchStartTime, videoDuration: videoDuration), run.usage, run.stdout)
-        }
-
-        // Try direct decode first
-        var parsed: SegmentMergeResponse?
-        var parseMethod = "none"
-        if let data = cleanOutput.data(using: .utf8) {
-            parsed = try? JSONDecoder().decode(SegmentMergeResponse.self, from: data)
-            if parsed != nil { parseMethod = "direct" }
-        }
-
-        // Fallback: extract JSON object between first { and last } (handles "Here is the answer: {...}")
-        if parsed == nil || parsed!.segments.isEmpty {
-            if let firstBrace = cleanOutput.firstIndex(of: "{"),
-               let lastBrace = cleanOutput.lastIndex(of: "}"),
-               firstBrace < lastBrace {
-                let jsonSlice = String(cleanOutput[firstBrace...lastBrace])
-                if let sliceData = jsonSlice.data(using: .utf8) {
-                    parsed = try? JSONDecoder().decode(SegmentMergeResponse.self, from: sliceData)
-                    if parsed != nil { parseMethod = "brace-extraction" }
-                }
-            }
-        }
-
-        guard let parsed, !parsed.segments.isEmpty else {
-            print("\(logPrefix) ⚠️ Failed to parse segments (parseMethod: \(parseMethod)), using fallback")
-            print("\(logPrefix)   cleanOutput: \(cleanOutput)")
-            return (fallbackObservations(frames: frames, batchId: batchId, batchStartTime: batchStartTime, videoDuration: videoDuration), run.usage, run.stdout)
-        }
-
-        // === PARSED SEGMENTS LOGGING ===
-        print("\(logPrefix) 🔍 PARSED SEGMENTS (parseMethod: \(parseMethod), count: \(parsed.segments.count)):")
-        for (i, seg) in parsed.segments.enumerated() {
-            let durationSec = parseVideoTimestamp(seg.end) - parseVideoTimestamp(seg.start)
-            print("\(logPrefix)   [\(i)] \(seg.start) → \(seg.end) (duration: \(durationSec)s): \(seg.description.prefix(60))...")
-        }
-
-        // === SEGMENT → OBSERVATION CONVERSION ===
-        print("\(logPrefix) 🔄 CONVERTING SEGMENTS TO OBSERVATIONS:")
-        var observations: [Observation] = []
-        for (i, seg) in parsed.segments.enumerated() {
-            let startSeconds = TimeInterval(parseVideoTimestamp(seg.start))
-            let endSeconds = TimeInterval(parseVideoTimestamp(seg.end))
-
-            print("\(logPrefix)   [\(i)] Processing segment '\(seg.start)' → '\(seg.end)'")
-            print("\(logPrefix)       startSeconds: \(startSeconds), endSeconds: \(endSeconds)")
-
-            guard endSeconds > startSeconds else {
-                print("\(logPrefix)       ⚠️ SKIPPED: endSeconds <= startSeconds")
-                continue
-            }
-
-            let clampedEndSeconds = videoDuration > 0 ? min(endSeconds, videoDuration) : endSeconds
-            let startDate = batchStartTime.addingTimeInterval(startSeconds)
-            let endDate = batchStartTime.addingTimeInterval(clampedEndSeconds)
-
-            let startEpoch = Int(startDate.timeIntervalSince1970)
-            let endEpoch = max(startEpoch + 1, Int(endDate.timeIntervalSince1970))
-            let durationMinutes = Double(endEpoch - startEpoch) / 60.0
-
-            print("\(logPrefix)       clampedEndSeconds: \(clampedEndSeconds)")
-            print("\(logPrefix)       startDate: \(timeFormatter.string(from: startDate)) (epoch: \(startEpoch))")
-            print("\(logPrefix)       endDate: \(timeFormatter.string(from: endDate)) (epoch: \(endEpoch))")
-            print("\(logPrefix)       → Observation duration: \(String(format: "%.1f", durationMinutes)) minutes")
-
-            observations.append(
-                Observation(
-                    id: nil,
-                    batchId: batchId ?? -1,
-                    startTs: startEpoch,
-                    endTs: endEpoch,
-                    observation: seg.description,
-                    metadata: nil,
-                    llmModel: tool.rawValue,
-                    createdAt: Date()
-                )
-            )
-        }
-
-        // === FINAL OUTPUT LOGGING ===
-        if observations.isEmpty {
-            print("\(logPrefix) ⚠️ No valid observations created, using fallback")
-            return (fallbackObservations(frames: frames, batchId: batchId, batchStartTime: batchStartTime, videoDuration: videoDuration), run.usage, run.stdout)
-        }
-
-        print("\(logPrefix) ✅ FINAL OBSERVATIONS (count: \(observations.count)):")
-        for (i, obs) in observations.enumerated() {
-            let startTime = timeFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(obs.startTs)))
-            let endTime = timeFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(obs.endTs)))
-            let durationMin = Double(obs.endTs - obs.startTs) / 60.0
-            print("\(logPrefix)   [\(i)] \(startTime) → \(endTime) (\(String(format: "%.1f", durationMin)) min): \(obs.observation.prefix(50))...")
-        }
-        print("\(logPrefix) ═══════════════════════════════════════════════════════\n")
-
-        return (observations, run.usage, run.stdout)
-    }
-
-    private func fallbackObservations(frames: [(timestamp: TimeInterval, description: String)],
-                                      batchId: Int64?,
-                                      batchStartTime: Date,
-                                      videoDuration: TimeInterval) -> [Observation] {
-        let logPrefix = "[ChatCLI][merge][fallback]"
-        let timeFormatter = DateFormatter()
-        timeFormatter.dateFormat = "h:mm:ss a"
-        timeFormatter.locale = Locale(identifier: "en_US_POSIX")
-        timeFormatter.timeZone = TimeZone.current
-
-        print("\(logPrefix) ⚠️ USING FALLBACK - Creating per-frame observations")
-        print("\(logPrefix)   frameCount: \(frames.count)")
-        print("\(logPrefix)   batchStartTime: \(timeFormatter.string(from: batchStartTime))")
-        print("\(logPrefix)   videoDuration: \(Int(videoDuration))s")
-        print("\(logPrefix)   screenshotInterval: \(screenshotInterval)s")
-
-        let sorted = frames.sorted { $0.timestamp < $1.timestamp }
-        var result: [Observation] = []
-        for (i, item) in sorted.enumerated() {
-            let startSeconds = max(0.0, item.timestamp)
-            let endSeconds = startSeconds + screenshotInterval
-            let clampedEndSeconds = videoDuration > 0 ? min(videoDuration, endSeconds) : endSeconds
-
-            let startDate = batchStartTime.addingTimeInterval(startSeconds)
-            let endDate = batchStartTime.addingTimeInterval(max(clampedEndSeconds, startSeconds + 1))
-
-            let startEpoch = Int(startDate.timeIntervalSince1970)
-            let endEpoch = max(startEpoch + 1, Int(endDate.timeIntervalSince1970))
-
-            let startTime = timeFormatter.string(from: startDate)
-            let endTime = timeFormatter.string(from: endDate)
-            let durationSec = endEpoch - startEpoch
-            print("\(logPrefix)   [\(i)] \(startTime) → \(endTime) (\(durationSec)s): \(item.description.prefix(40))...")
-
-            result.append(
-                Observation(
-                    id: nil,
-                    batchId: batchId ?? -1,
-                    startTs: startEpoch,
-                    endTs: endEpoch,
-                    observation: item.description,
-                    metadata: nil,
-                    llmModel: tool.rawValue,
-                    createdAt: Date()
-                )
-            )
-        }
-
-        print("\(logPrefix) Created \(result.count) fallback observations")
-        return result
     }
 
     private func formatSeconds(_ seconds: TimeInterval) -> String {
@@ -1859,11 +789,11 @@ final class ChatCLIProvider {
 
     // MARK: - Logging helpers
 
-    private func makeCtx(batchId: Int64?, operation: String, startedAt: Date) -> LLMCallContext {
+    private func makeCtx(batchId: Int64?, operation: String, startedAt: Date, attempt: Int = 1) -> LLMCallContext {
         LLMCallContext(
             batchId: batchId,
             callGroupId: nil,
-            attempt: 1,
+            attempt: attempt,
             provider: "chat_cli",
             model: tool.rawValue,
             operation: operation,
@@ -1955,7 +885,121 @@ final class ChatCLIProvider {
 
     // MARK: - Screenshot Transcription
 
-    /// Transcribe observations from screenshots.
+    private func buildScreenshotTranscriptionPrompt(numFrames: Int, duration: String, startTime: String, endTime: String) -> String {
+        return """
+        Analyze these \(numFrames) screenshots from a \(duration) screen recording
+        (\(startTime) to \(endTime)). They are 1 min apart and in order.
+
+        Create an activity log detailed enough that someone could reconstruct what
+        the user did.
+
+        For each segment, ask yourself: "What EXACTLY did they do? What SPECIFIC
+        things can I see?"
+
+        Capture from screenshots:
+        - Exact app/site names visible
+        - Exact file names, URLs, page titles
+        - Exact usernames, search queries, messages
+        - Exact numbers, stats, prices shown
+
+        Bad: "Checked email"
+        Good: "Gmail: Read email from boss@company.com 'RE: Budget approval' - replied 'Looks good'"
+
+        Bad: "Browsing Twitter"
+        Good: "Twitter/X: Scrolled feed - viewed posts by @pmarca about AI, @sama thread on GPT-5 (12 tweets)"
+
+        Bad: "Working on code"
+        Good: "VS Code: Editing StorageManager.swift - fixed type error on line 47, changed String to String?"
+
+        3-8 segments total.
+        Exception: You may use 1 segment only if the user appears idle for most of the recording.
+        Group by GOAL not app (debugging across IDE+Terminal+Browser = 1 segment).
+
+        Timestamps must start at \(startTime) and end at \(endTime). No gaps.
+
+        Return JSON only:
+        {"segments":[{"start":"HH:MM:SS","end":"HH:MM:SS","description":"..."}]}
+        """
+    }
+
+    private func parseSegments(from output: String) throws -> [SegmentMergeResponse.Segment] {
+        let cleaned = output
+            .replacingOccurrences(of: "```json", with: "")
+            .replacingOccurrences(of: "```", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let data = cleaned.data(using: .utf8),
+           let parsed = try? JSONDecoder().decode(SegmentMergeResponse.self, from: data),
+           !parsed.segments.isEmpty {
+            return parsed.segments
+        }
+
+        if let data = cleaned.data(using: .utf8),
+           let parsed = try? JSONDecoder().decode([SegmentMergeResponse.Segment].self, from: data),
+           !parsed.isEmpty {
+            return parsed
+        }
+
+        if let firstBrace = cleaned.firstIndex(of: "{"),
+           let lastBrace = cleaned.lastIndex(of: "}"),
+           firstBrace < lastBrace {
+            let slice = String(cleaned[firstBrace...lastBrace])
+            if let data = slice.data(using: .utf8),
+               let parsed = try? JSONDecoder().decode(SegmentMergeResponse.self, from: data),
+               !parsed.segments.isEmpty {
+                return parsed.segments
+            }
+        }
+
+        throw NSError(domain: "ChatCLI", code: -31, userInfo: [NSLocalizedDescriptionKey: "Failed to decode segments JSON"])
+    }
+
+    private func validateSegments(_ segments: [SegmentMergeResponse.Segment], duration: TimeInterval) -> String? {
+        guard !segments.isEmpty else { return "No segments returned." }
+
+        let tolerance: TimeInterval = 2.0
+        var parsed: [(start: TimeInterval, end: TimeInterval, description: String)] = []
+
+        for segment in segments {
+            let startSeconds = TimeInterval(parseVideoTimestamp(segment.start))
+            let endSeconds = TimeInterval(parseVideoTimestamp(segment.end))
+            if endSeconds <= startSeconds {
+                return "Segment end time must be after start time: \(segment.start) -> \(segment.end)"
+            }
+            if startSeconds < 0 {
+                return "Segment start time must be >= 00:00:00 (got \(segment.start))."
+            }
+            if duration > 0, endSeconds > duration + tolerance {
+                return "Segment out of bounds: \(segment.start) -> \(segment.end) (duration \(formatSeconds(duration)))"
+            }
+            parsed.append((startSeconds, endSeconds, segment.description))
+        }
+
+        let ordered = parsed.sorted { $0.start < $1.start }
+        if duration > 0, let first = ordered.first, first.start > tolerance {
+            return "First segment must start at 00:00:00 (starts at \(formatSeconds(first.start)))."
+        }
+
+        for i in 1..<ordered.count {
+            let prev = ordered[i - 1]
+            let next = ordered[i]
+            let gap = next.start - prev.end
+            if gap > tolerance {
+                return "Gap detected between segments: \(formatSeconds(prev.end)) -> \(formatSeconds(next.start))"
+            }
+            if gap < -tolerance {
+                return "Overlap detected between segments: \(formatSeconds(next.start)) starts before \(formatSeconds(prev.end))"
+            }
+        }
+
+        if duration > 0, let last = ordered.last, duration - last.end > tolerance {
+            return "Last segment must end at \(formatSeconds(duration)) (ends at \(formatSeconds(last.end)))."
+        }
+
+        return nil
+    }
+
+    /// Transcribe observations from screenshots using a single-shot prompt.
     func transcribeScreenshots(_ screenshots: [Screenshot], batchStartTime: Date, batchId: Int64?) async throws -> (observations: [Observation], log: LLMCall) {
         guard !screenshots.isEmpty else {
             throw NSError(domain: "ChatCLI", code: -96, userInfo: [NSLocalizedDescriptionKey: "No screenshots to transcribe"])
@@ -1969,26 +1013,21 @@ final class ChatCLIProvider {
         let strideAmount = max(1, sortedScreenshots.count / targetSamples)
         let sampledScreenshots = Swift.stride(from: 0, to: sortedScreenshots.count, by: strideAmount).map { sortedScreenshots[$0] }
 
-        // Calculate "video duration" from timestamp range
-        let firstTs = sampledScreenshots.first!.capturedAt
-        let lastTs = sampledScreenshots.last!.capturedAt
-        let videoDuration = TimeInterval(lastTs - firstTs)
+        let firstTs = sortedScreenshots.first!.capturedAt
+        let lastTs = sortedScreenshots.last!.capturedAt
+        let durationSeconds = TimeInterval(lastTs - firstTs)
+        let durationString = formatSeconds(durationSeconds)
 
-        // Convert screenshots to FrameData (reuse existing paths — no need to copy files)
-        let frames: [FrameData] = sampledScreenshots.compactMap { screenshot in
-            // Calculate timestamp relative to batch start (like video frames)
-            let relativeTimestamp = TimeInterval(screenshot.capturedAt - firstTs)
-
-            // Verify the file exists
+        let imagePaths: [String] = sampledScreenshots.compactMap { screenshot in
             guard FileManager.default.fileExists(atPath: screenshot.filePath) else {
                 print("[ChatCLI] ⚠️ Screenshot file not found: \(screenshot.filePath)")
                 return nil
             }
 
-            return FrameData(timestamp: relativeTimestamp, path: screenshot.filePath)
+            return screenshot.filePath
         }
 
-        guard !frames.isEmpty else {
+        guard !imagePaths.isEmpty else {
             throw NSError(
                 domain: "ChatCLI",
                 code: -97,
@@ -1996,131 +1035,108 @@ final class ChatCLIProvider {
             )
         }
 
-        // Note: Don't cleanup these frames since they're the original screenshot files, not temp copies!
+        let model: String
+        let effort: String?
+        switch tool {
+        case .claude:
+            model = "haiku"
+            effort = nil
+        case .codex:
+            model = "gpt-5.1-codex-mini"
+            effort = "low"
+        }
 
-        var usageTotal = TokenUsage.zero
-        var sawUsage = false
-        var lastMergeRawOutput = ""
+        let basePrompt = buildScreenshotTranscriptionPrompt(
+            numFrames: imagePaths.count,
+            duration: durationString,
+            startTime: "00:00:00",
+            endTime: durationString
+        )
+        var actualPrompt = basePrompt
+        var lastError: Error?
+        var lastRun: ChatCLIRunResult?
 
-        // Retry loop for entire transcription pipeline (2 retries)
         let maxTranscribeAttempts = 3
-        for transcribeAttempt in 1...maxTranscribeAttempts {
+        for attempt in 1...maxTranscribeAttempts {
             do {
-                // Per-frame descriptions via CLI (reuse existing batching logic)
-                var frameDescriptions: [(timestamp: TimeInterval, description: String)] = []
-                let batchSize = 10
-                for chunk in stride(from: 0, to: frames.count, by: batchSize) {
-                    let slice = Array(frames[chunk..<min(chunk+batchSize, frames.count)])
+                let run = try runAndScrub(prompt: actualPrompt, imagePaths: imagePaths, model: model, reasoningEffort: effort)
+                lastRun = run
 
-                    var localPairs: [(FrameData, String)] = []
-                    var localUsage: TokenUsage? = nil
-                    var lastError: Error? = nil
+                let segments = try parseSegments(from: run.stdout)
+                if let validationError = validateSegments(segments, duration: durationSeconds) {
+                    lastError = NSError(domain: "ChatCLI", code: -98, userInfo: [NSLocalizedDescriptionKey: validationError])
+                    actualPrompt = basePrompt + "\n\nPREVIOUS ATTEMPT FAILED - FIX THE FOLLOWING:\n" + validationError + "\n\nReturn JSON only."
+                    if attempt < maxTranscribeAttempts {
+                        print("[ChatCLI] Screenshot transcribe validation failed (attempt \(attempt)): \(validationError)")
+                        let backoffSeconds = pow(2.0, Double(attempt - 1)) * 2.0
+                        try await Task.sleep(nanoseconds: UInt64(backoffSeconds * 1_000_000_000))
+                        continue
+                    }
+                } else {
+                    let ordered = segments.sorted { parseVideoTimestamp($0.start) < parseVideoTimestamp($1.start) }
+                    var observations: [Observation] = []
+                    for segment in ordered {
+                        let startSeconds = TimeInterval(parseVideoTimestamp(segment.start))
+                        let endSeconds = TimeInterval(parseVideoTimestamp(segment.end))
+                        let clampedStart = max(0.0, startSeconds)
+                        let clampedEnd = durationSeconds > 0 ? min(endSeconds, durationSeconds) : endSeconds
+                        guard clampedEnd > clampedStart else { continue }
 
-                    // Try initial call
-                    do {
-                        let (initialPairs, initialUsage) = try describeFramesBatch(slice)
-                        localPairs = initialPairs
-                        localUsage = initialUsage
-                    } catch {
-                        lastError = error
-                        // Retry with more powerful model
-                        if tool == .codex {
-                            do {
-                                let (retryPairs, retryUsage) = try describeFramesBatch(slice, overrideModel: "gpt-5.2", overrideEffort: "high")
-                                localPairs = retryPairs
-                                localUsage = retryUsage
-                                lastError = nil
-                            } catch {
-                                lastError = error
-                            }
-                        } else if tool == .claude {
-                            do {
-                                let (retryPairs, retryUsage) = try describeFramesBatch(slice, overrideModel: "sonnet")
-                                localPairs = retryPairs
-                                localUsage = retryUsage
-                                lastError = nil
-                            } catch {
-                                lastError = error
-                            }
+                        let startDate = batchStartTime.addingTimeInterval(clampedStart)
+                        let endDate = batchStartTime.addingTimeInterval(clampedEnd)
+                        let startEpoch = Int(startDate.timeIntervalSince1970)
+                        let endEpoch = max(startEpoch + 1, Int(endDate.timeIntervalSince1970))
+
+                        let trimmedDescription = segment.description.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if trimmedDescription.isEmpty { continue }
+
+                        observations.append(
+                            Observation(
+                                id: nil,
+                                batchId: batchId ?? -1,
+                                startTs: startEpoch,
+                                endTs: endEpoch,
+                                observation: trimmedDescription,
+                                metadata: nil,
+                                llmModel: tool.rawValue,
+                                createdAt: Date()
+                            )
+                        )
+                    }
+
+                    if observations.isEmpty {
+                        lastError = NSError(domain: "ChatCLI", code: -99, userInfo: [NSLocalizedDescriptionKey: "No observations could be created from segments."])
+                        if attempt < maxTranscribeAttempts {
+                            let backoffSeconds = pow(2.0, Double(attempt - 1)) * 2.0
+                            try await Task.sleep(nanoseconds: UInt64(backoffSeconds * 1_000_000_000))
+                            continue
                         }
+                    } else {
+                        let finishedAt = run.finishedAt
+                        logSuccess(ctx: makeCtx(batchId: batchId, operation: "transcribe_screenshots", startedAt: callStart, attempt: attempt), finishedAt: finishedAt, stdout: run.stdout, stderr: run.stderr, responseHeaders: tokenHeaders(from: run.usage))
+                        let llmCall = makeLLMCall(start: callStart, end: finishedAt, input: actualPrompt, output: run.stdout)
+                        return (observations, llmCall)
                     }
-
-                    if let error = lastError {
-                        throw error
-                    }
-
-                    if let localUsage { usageTotal = usageTotal.adding(localUsage); sawUsage = true }
-                    for (frame, desc) in localPairs {
-                        frameDescriptions.append((timestamp: frame.timestamp, description: desc))
-                    }
-                }
-
-                // Merge descriptions into observations via CLI text prompt
-                let (observations, mergeUsage, mergeRawOutput) = try mergeFrameDescriptionsWithCLI(
-                    frameDescriptions,
-                    batchStartTime: batchStartTime,
-                    videoDuration: videoDuration,
-                    batchId: batchId,
-                    callStart: callStart
-                )
-
-                if let mergeUsage { usageTotal = usageTotal.adding(mergeUsage); sawUsage = true }
-
-                // Check if we got observations
-                if !observations.isEmpty {
-                    let finishedAt = Date()
-                    let headers = sawUsage ? tokenHeaders(from: usageTotal) : nil
-                    logSuccess(ctx: makeCtx(batchId: batchId, operation: "transcribe_screenshots", startedAt: callStart), finishedAt: finishedAt, stdout: mergeRawOutput, stderr: "", responseHeaders: headers)
-                    let llmCall = makeLLMCall(start: callStart, end: finishedAt, input: "screenshots \(screenshots.count)", output: "obs \(observations.count)")
-                    return (observations, llmCall)
-                }
-
-                // Store raw output for potential failure logging
-                lastMergeRawOutput = mergeRawOutput
-
-                // Empty observations - log and maybe retry
-                if transcribeAttempt < maxTranscribeAttempts {
-                    print("[ChatCLI] Screenshot transcribe attempt \(transcribeAttempt) returned 0 observations from \(frames.count) screenshots, retrying...")
-                    // Capture values before Task to avoid mutating var across async boundary
-                    let frameDescriptionsCount = frameDescriptions.count
-                    let screenshotCount = screenshots.count
-                    Task { @MainActor in
-                        AnalyticsService.shared.capture("transcribe_screenshots_empty_retry", [
-                            "batch_id": batchId as Any,
-                            "attempt": transcribeAttempt,
-                            "screenshot_count": screenshotCount,
-                            "frame_descriptions_count": frameDescriptionsCount,
-                            "tool": tool.rawValue
-                        ])
-                    }
-                    let backoffSeconds = pow(2.0, Double(transcribeAttempt - 1)) * 2.0
-                    try await Task.sleep(nanoseconds: UInt64(backoffSeconds * 1_000_000_000))
-                    usageTotal = TokenUsage.zero
-                    sawUsage = false
                 }
             } catch {
-                if transcribeAttempt < maxTranscribeAttempts {
-                    print("[ChatCLI] Screenshot transcribe attempt \(transcribeAttempt) failed: \(error.localizedDescription) — retrying")
-                    let backoffSeconds = pow(2.0, Double(transcribeAttempt - 1)) * 2.0
+                lastError = error
+                if attempt < maxTranscribeAttempts {
+                    print("[ChatCLI] Screenshot transcribe attempt \(attempt) failed: \(error.localizedDescription) — retrying")
+                    let backoffSeconds = pow(2.0, Double(attempt - 1)) * 2.0
                     try await Task.sleep(nanoseconds: UInt64(backoffSeconds * 1_000_000_000))
-                    usageTotal = TokenUsage.zero
-                    sawUsage = false
                     continue
                 }
 
-                let finishedAt = Date()
-                logFailure(ctx: makeCtx(batchId: batchId, operation: "describe_screenshots", startedAt: callStart), finishedAt: finishedAt, error: error)
-                throw error
+                break
             }
         }
 
-        // All attempts returned empty observations
-        let finishedAt = Date()
-        let emptyError = NSError(domain: "ChatCLI", code: -99, userInfo: [
-            NSLocalizedDescriptionKey: "Screenshot transcription produced 0 observations after \(maxTranscribeAttempts) attempts from \(screenshots.count) screenshots"
+        let finishedAt = lastRun?.finishedAt ?? Date()
+        let finalError = lastError ?? NSError(domain: "ChatCLI", code: -99, userInfo: [
+            NSLocalizedDescriptionKey: "Screenshot transcription failed after \(maxTranscribeAttempts) attempts from \(imagePaths.count) screenshots"
         ])
-        logFailure(ctx: makeCtx(batchId: batchId, operation: "transcribe_screenshots", startedAt: callStart), finishedAt: finishedAt, error: emptyError, stdout: lastMergeRawOutput)
-        throw emptyError
+        logFailure(ctx: makeCtx(batchId: batchId, operation: "transcribe_screenshots", startedAt: callStart, attempt: maxTranscribeAttempts), finishedAt: finishedAt, error: finalError, stdout: lastRun?.stdout, stderr: lastRun?.stderr)
+        throw finalError
     }
 
     // MARK: - Text Generation (Streaming)
@@ -2210,7 +1226,7 @@ final class ChatCLIProvider {
             throw error
         }
 
-        logSuccess(ctx: ctx, finishedAt: run.finishedAt, stdout: run.stdout, stderr: run.stderr)
+        logSuccess(ctx: ctx, finishedAt: run.finishedAt, stdout: run.stdout, stderr: run.stderr, responseHeaders: tokenHeaders(from: run.usage))
 
         // Parse thinking - Codex puts it in stdout, Claude in stderr
         let thinking: String?

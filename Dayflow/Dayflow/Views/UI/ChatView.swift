@@ -9,6 +9,12 @@ import SwiftUI
 import Charts
 import AppKit
 
+private let chatViewDebugTimestampFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "HH:mm:ss.SSS"
+    return formatter
+}()
+
 struct ChatView: View {
     @ObservedObject private var chatService = ChatService.shared
     @State private var inputText = ""
@@ -16,18 +22,58 @@ struct ChatView: View {
     @FocusState private var isInputFocused: Bool
     @Namespace private var bottomID
     @AppStorage("chatCLIPreferredTool") private var selectedTool: String = "codex"
+    @AppStorage("hasChatBetaAccepted") private var hasBetaAccepted: Bool = false
+    @State private var cliDetected = false
+    @State private var cliDetectionTask: Task<Void, Never>?
+    @State private var didCheckCLI = false
+    @State private var showToolSwitchConfirm = false
+    @State private var pendingToolSelection: String?
+    @State private var conversationId: UUID?
+
+    private var isUnlocked: Bool {
+        hasBetaAccepted
+    }
+
+    private var cliEnabled: Bool {
+        hasBetaAccepted || cliDetected
+    }
 
     var body: some View {
-        HStack(spacing: 0) {
-            // Main chat area
-            chatContent
-
-            // Debug panel (toggleable)
-            if chatService.showDebugPanel {
-                debugPanel
+        ZStack {
+            if isUnlocked {
+                HStack(spacing: 0) {
+                    chatContent
+                    if chatService.showDebugPanel {
+                        debugPanel
+                    }
+                }
+                .transition(.opacity)
+            } else {
+                betaLockScreen
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
         .preferredColorScheme(.light)
+        .task {
+            guard !didCheckCLI else { return }
+            didCheckCLI = true
+            guard !hasBetaAccepted else { return }
+            await detectCLIInstallation()
+        }
+        .onDisappear {
+            cliDetectionTask?.cancel()
+            cliDetectionTask = nil
+        }
+        .alert("Switch model?", isPresented: $showToolSwitchConfirm) {
+            Button("Switch and Reset", role: .destructive) {
+                confirmToolSwitch()
+            }
+            Button("Cancel", role: .cancel) {
+                pendingToolSelection = nil
+            }
+        } message: {
+            Text("Switching to \(pendingToolLabel) will clear this chat's context.")
+        }
     }
 
     private var chatContent: some View {
@@ -38,10 +84,20 @@ struct ChatView: View {
 
                 // Clear chat button (only show if there are messages)
                 if !chatService.messages.isEmpty {
-                    Button(action: { chatService.clearConversation() }) {
-                        Image(systemName: "arrow.counterclockwise")
-                            .font(.system(size: 13))
-                            .foregroundColor(Color(hex: "999999"))
+                    Button(action: { resetConversation() }) {
+                        Text("Clear")
+                            .font(.custom("Nunito", size: 12).weight(.semibold))
+                            .foregroundColor(Color(hex: "F96E00"))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(Color(hex: "FFF4E9"))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .stroke(Color(hex: "F96E00").opacity(0.25), lineWidth: 1)
+                            )
                     }
                     .buttonStyle(.plain)
                     .help("Clear chat")
@@ -97,6 +153,7 @@ struct ChatView: View {
                     .padding(.top, 16)
                     .padding(.bottom, 20)
                 }
+                .scrollIndicators(.never)
                 .onChange(of: chatService.messages.count) {
                     withAnimation(.easeOut(duration: 0.2)) {
                         proxy.scrollTo(bottomID, anchor: .bottom)
@@ -183,7 +240,6 @@ struct ChatView: View {
             Image(systemName: "bubble.left.and.bubble.right.fill")
                 .font(.system(size: 36))
                 .foregroundColor(Color(hex: "F96E00").opacity(0.6))
-                .padding(.top, 40)
 
             Text("Ask about your day")
                 .font(.custom("InstrumentSerif-Regular", size: 24))
@@ -194,20 +250,164 @@ struct ChatView: View {
                 .foregroundColor(Color(hex: "666666"))
 
             VStack(alignment: .leading, spacing: 10) {
-                SuggestionChip(text: "What did I do today?") {
-                    sendMessage("What did I do today?")
+                SuggestionChip(text: "Generate standup notes for yesterday") {
+                    sendMessage("Generate standup notes for yesterday")
                 }
-                SuggestionChip(text: "How much time did I spend on Twitter this week?") {
-                    sendMessage("How much time did I spend on Twitter this week?")
+                SuggestionChip(text: "What did I get done last week?") {
+                    sendMessage("What did I get done last week?")
                 }
-                SuggestionChip(text: "What was my longest focus block yesterday?") {
-                    sendMessage("What was my longest focus block yesterday?")
+                SuggestionChip(text: "What distracted me the most this past week?") {
+                    sendMessage("What distracted me the most this past week?")
+                }
+                SuggestionChip(text: "Pull my data from the last week and tell me something interesting") {
+                    sendMessage("Pull my data from the last week and tell me something interesting")
                 }
             }
             .padding(.top, 8)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 40)
+        .padding(.bottom, 40)
+    }
+
+    // MARK: - Beta Lock Screen
+
+    private var betaLockScreen: some View {
+        VStack(spacing: 16) {
+            Spacer()
+
+            // Header: "Unlock Beta" with BETA badge
+            HStack(alignment: .top, spacing: 4) {
+                Text("Unlock Beta")
+                    .font(.custom("InstrumentSerif-Italic", size: 38))
+                    .foregroundColor(Color(hex: "593D2A"))
+
+                Text("BETA")
+                    .font(.custom("Nunito-Bold", size: 11))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color(hex: "F98D3D"))
+                    )
+                    .rotationEffect(.degrees(-12))
+                    .offset(x: -4, y: -4)
+            }
+
+            // Feature description (below title)
+            VStack(spacing: 6) {
+                Text("We're beta testing an early version of Dashboard. It's a chat feature that intelligently pulls from your Dayflow data to generate insights. You can ask it to generate charts and other visualizations of your data.")
+                    .font(.custom("Nunito-Regular", size: 14))
+                    .foregroundColor(Color(hex: "593D2A").opacity(0.85))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 600)
+
+                Text("Please send feedback if you see any bugs or weird behavior!")
+                    .font(.custom("Nunito-SemiBold", size: 14))
+                    .foregroundColor(Color(hex: "593D2A"))
+                    .multilineTextAlignment(.center)
+            }
+
+            // Main content card
+            VStack(spacing: 16) {
+                // CLI requirement section
+                VStack(spacing: 12) {
+                    Image(systemName: cliDetected ? "checkmark.circle.fill" : "terminal")
+                        .font(.system(size: 32))
+                        .foregroundColor(cliDetected ? Color(hex: "34C759") : Color(hex: "F98D3D"))
+                        .contentTransition(.symbolEffect(.replace))
+                        .animation(.easeOut(duration: 0.2), value: cliDetected)
+
+                    if cliDetected {
+                        Text("Claude or Codex CLI detected")
+                            .font(.custom("Nunito-SemiBold", size: 15))
+                            .foregroundColor(Color(hex: "34C759"))
+                            .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                    } else {
+                        Text("Claude or Codex CLI required")
+                            .font(.custom("Nunito-SemiBold", size: 15))
+                            .foregroundColor(Color(hex: "593D2A"))
+
+                        Text("It's currently only available to users using Claude or Codex CLI to power Dayflow.")
+                            .font(.custom("Nunito-Regular", size: 13))
+                            .foregroundColor(Color(hex: "593D2A").opacity(0.8))
+                            .multilineTextAlignment(.center)
+                    }
+                }
+                .animation(.easeOut(duration: 0.25), value: cliDetected)
+
+                // Continue button
+                Button(action: {
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        hasBetaAccepted = true
+                    }
+                }) {
+                    Text(cliDetected ? "Unlock Beta" : "Install CLI to continue")
+                        .font(.custom("Nunito-SemiBold", size: 15))
+                        .foregroundColor(cliDetected ? Color(hex: "593D2A") : Color(hex: "999999"))
+                        .padding(.horizontal, 28)
+                        .padding(.vertical, 12)
+                        .background(
+                            Capsule()
+                                .fill(
+                                    cliDetected
+                                        ? LinearGradient(
+                                            colors: [
+                                                Color(hex: "FFF4E9"),
+                                                Color(hex: "FFE8D4")
+                                            ],
+                                            startPoint: .top,
+                                            endPoint: .bottom
+                                        )
+                                        : LinearGradient(
+                                            colors: [
+                                                Color(hex: "F0F0F0"),
+                                                Color(hex: "E8E8E8")
+                                            ],
+                                            startPoint: .top,
+                                            endPoint: .bottom
+                                        )
+                                )
+                                .overlay(
+                                    Capsule()
+                                        .stroke(
+                                            cliDetected ? Color(hex: "E8C9A8") : Color(hex: "D0D0D0"),
+                                            lineWidth: 1
+                                        )
+                                )
+                        )
+                }
+                .buttonStyle(BetaButtonStyle(isEnabled: cliDetected))
+                .disabled(!cliDetected)
+            }
+            .padding(20)
+            .background(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(Color.white)
+                    .shadow(color: Color.black.opacity(0.08), radius: 20, x: 0, y: 8)
+            )
+            .frame(maxWidth: 420)
+
+            // Privacy Note (at bottom)
+            VStack(spacing: 4) {
+                Text("Privacy Note")
+                    .font(.custom("Nunito-SemiBold", size: 12))
+                    .foregroundColor(Color(hex: "593D2A").opacity(0.6))
+
+                Text("During the beta, your questions are logged to help improve the product. Responses are not logged, so your privacy is maintained.")
+                    .font(.custom("Nunito-Regular", size: 12))
+                    .foregroundColor(Color(hex: "593D2A").opacity(0.5))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 600)
+            }
+            .padding(.top, 4)
+
+            Spacer()
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(hex: "FFFAF5"))
     }
 
     // MARK: - Input Area
@@ -215,47 +415,29 @@ struct ChatView: View {
     private var inputArea: some View {
         VStack(spacing: 0) {
             // Text input
-            ZStack(alignment: .topLeading) {
-                if inputText.isEmpty {
-                    Text("Ask about your day...")
-                        .font(.custom("Nunito", size: 13).weight(.medium))
-                        .foregroundColor(Color(hex: "AAAAAA"))
-                        .padding(.leading, 14)
-                        .padding(.top, 10)
-                }
-
-                TextEditor(text: $inputText)
+            TextField(
+                "",
+                text: $inputText,
+                prompt: Text("Ask about your day...")
                     .font(.custom("Nunito", size: 13).weight(.medium))
-                    .foregroundColor(Color(hex: "333333"))
-                    .scrollContentBackground(.hidden)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .focused($isInputFocused)
-                    .disabled(chatService.isProcessing)
-                    .onKeyPress { press in
-                        if press.key == .return {
-                            if press.modifiers.contains(.shift) {
-                                return .ignored  // Shift+Enter = new line
-                            } else {
-                                sendMessage(inputText)
-                                return .handled  // Enter = send
-                            }
-                        }
-                        return .ignored
-                    }
-            }
+                    .foregroundColor(Color(hex: "AAAAAA"))
+            )
+            .textFieldStyle(.plain)
+            .font(.custom("Nunito", size: 13).weight(.medium))
+            .foregroundColor(Color(hex: "333333"))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
             .frame(height: 36)
+            .focused($isInputFocused)
+            .disabled(chatService.isProcessing)
+            .onSubmit {
+                sendMessage(inputText)
+            }
 
             // Bottom toolbar
             HStack(spacing: 8) {
-                // Provider picker
-                Picker("", selection: $selectedTool) {
-                    Text("Codex").tag("codex")
-                    Text("Claude").tag("claude")
-                }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .tint(Color(hex: "666666"))
+                // Provider toggle
+                providerToggle
 
                 Spacer()
 
@@ -301,6 +483,37 @@ struct ChatView: View {
         .padding(.vertical, 12)
     }
 
+    private var providerToggle: some View {
+        HStack(spacing: 6) {
+            ProviderTogglePill(
+                title: "Codex",
+                isSelected: selectedTool == "codex",
+                isEnabled: cliEnabled
+            ) {
+                handleToolSelection("codex")
+            }
+            ProviderTogglePill(
+                title: "Claude",
+                isSelected: selectedTool == "claude",
+                isEnabled: cliEnabled
+            ) {
+                handleToolSelection("claude")
+            }
+        }
+        .padding(4)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.white)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color(hex: "E6E6E6"), lineWidth: 1)
+        )
+        .opacity(cliEnabled ? 1.0 : 0.6)
+        .help(cliEnabled ? "Choose CLI provider" : "Install Codex or Claude CLI to enable")
+        .allowsHitTesting(cliEnabled)
+    }
+
     private var statusInsertionIndex: Int? {
         guard chatService.workStatus != nil else { return nil }
         // Always show at the end (after the latest user message)
@@ -333,21 +546,84 @@ struct ChatView: View {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let messageText = text
         inputText = ""
+
+        // Track conversation for analytics
+        let isNewConversation = conversationId == nil || chatService.messages.isEmpty
+        if isNewConversation {
+            conversationId = UUID()
+        }
+
+        // Count only user messages for index
+        let messageIndex = chatService.messages.filter { $0.role == .user }.count
+
+        // Log question to PostHog (beta analytics)
+        AnalyticsService.shared.capture("chat_question_asked", [
+            "question": messageText,
+            "conversation_id": conversationId?.uuidString ?? "unknown",
+            "is_new_conversation": isNewConversation,
+            "message_index": messageIndex,
+            "provider": selectedTool
+        ])
+
         Task {
             await chatService.sendMessage(messageText)
         }
     }
 
-    private func copyDebugLog() {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss.SSS"
+    private func resetConversation() {
+        chatService.clearConversation()
+        conversationId = nil
+    }
 
+    private func copyDebugLog() {
         let text = chatService.debugLog.map { entry in
-            "[\(formatter.string(from: entry.timestamp))] \(entry.type.rawValue)\n\(entry.content)"
+            "[\(chatViewDebugTimestampFormatter.string(from: entry.timestamp))] \(entry.type.rawValue)\n\(entry.content)"
         }.joined(separator: "\n\n---\n\n")
 
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func detectCLIInstallation() async {
+        cliDetectionTask?.cancel()
+        cliDetectionTask = Task { @MainActor in
+            let installed = await Task.detached(priority: .utility) {
+                CLIDetector.isInstalled(.codex) || CLIDetector.isInstalled(.claude)
+            }.value
+
+            guard !Task.isCancelled else { return }
+            cliDetected = installed
+        }
+    }
+
+    private func handleToolSelection(_ tool: String) {
+        guard tool != selectedTool else { return }
+        guard !chatService.isProcessing else { return }
+
+        if chatService.messages.isEmpty {
+            resetConversation()
+            selectedTool = tool
+            return
+        }
+
+        pendingToolSelection = tool
+        showToolSwitchConfirm = true
+    }
+
+    private func confirmToolSwitch() {
+        guard let pendingToolSelection else { return }
+        resetConversation()
+        selectedTool = pendingToolSelection
+        self.pendingToolSelection = nil
+    }
+
+    private var pendingToolLabel: String {
+        switch pendingToolSelection {
+        case "claude":
+            return "Claude"
+        default:
+            return "Codex"
+        }
     }
 }
 
@@ -376,7 +652,7 @@ private struct MessageBubble: View {
                 .textSelection(.enabled)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
-                .background(Color(hex: "F96E00"))
+                .background(Color(hex: "F98D3D"))
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
     }
@@ -406,46 +682,32 @@ private struct MessageBubble: View {
         }
     }
 
-    private func renderMarkdownText(_ content: String) -> Text {
-        let normalized = content.replacingOccurrences(of: "\r\n", with: "\n")
+    private func renderMarkdownLines(_ content: String) -> some View {
+        // Convert markdown bullets to bullet characters for display
+        let normalized = content
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\n- ", with: "\n• ")
+
+        let processed = normalized.hasPrefix("- ")
+            ? "• " + String(normalized.dropFirst(2))
+            : normalized
+
         let options = AttributedString.MarkdownParsingOptions(
             interpretedSyntax: .inlineOnlyPreservingWhitespace
         )
-        if let parsed = try? AttributedString(markdown: normalized, options: options) {
-            return Text(parsed)
-        }
-        return Text(content)
-    }
 
-    private func renderMarkdownLines(_ content: String) -> some View {
-        let normalized = content.replacingOccurrences(of: "\r\n", with: "\n")
-        let lines = normalized.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-
-        return VStack(alignment: .leading, spacing: 6) {
-            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                let trimmed = line.trimmingCharacters(in: .whitespaces)
-                if trimmed.hasPrefix("- ") {
-                    HStack(alignment: .top, spacing: 6) {
-                        Text("•")
-                            .font(.custom("Nunito", size: 13).weight(.medium))
-                            .foregroundColor(Color(hex: "333333"))
-                        renderMarkdownText(String(trimmed.dropFirst(2)))
-                            .font(.custom("Nunito", size: 13).weight(.medium))
-                            .foregroundColor(Color(hex: "333333"))
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                } else if trimmed.isEmpty {
-                    Spacer(minLength: 4)
-                } else {
-                    renderMarkdownText(line)
-                        .font(.custom("Nunito", size: 13).weight(.medium))
-                        .foregroundColor(Color(hex: "333333"))
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
+        let displayText: Text
+        if let parsed = try? AttributedString(markdown: processed, options: options) {
+            displayText = Text(parsed)
+        } else {
+            displayText = Text(processed)
         }
+
+        return displayText
+            .font(.custom("Nunito", size: 13).weight(.medium))
+            .foregroundColor(Color(hex: "333333"))
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -1344,6 +1606,60 @@ private struct SuggestionChip: View {
     }
 }
 
+// MARK: - Beta Button Style (hover + press animations)
+
+private struct BetaButtonStyle: ButtonStyle {
+    let isEnabled: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed && isEnabled ? 0.97 : 1.0)
+            .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
+    }
+}
+
+private struct ProviderTogglePill: View {
+    let title: String
+    let isSelected: Bool
+    let isEnabled: Bool
+    let action: () -> Void
+
+    private var backgroundColor: Color {
+        if !isEnabled { return Color(hex: "F2F2F2") }
+        return isSelected ? Color(hex: "FFF4E9") : Color.white
+    }
+
+    private var borderColor: Color {
+        if !isEnabled { return Color(hex: "E0E0E0") }
+        return isSelected ? Color(hex: "F96E00").opacity(0.25) : Color(hex: "E0E0E0")
+    }
+
+    private var textColor: Color {
+        if !isEnabled { return Color(hex: "B0B0B0") }
+        return isSelected ? Color(hex: "F96E00") : Color(hex: "666666")
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.custom("Nunito", size: 12).weight(.semibold))
+                .foregroundColor(textColor)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(backgroundColor)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(borderColor, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+    }
+}
+
 // MARK: - Debug Log Entry
 
 private struct DebugLogEntry: View {
@@ -1383,9 +1699,7 @@ private struct DebugLogEntry: View {
     }
 
     private func formatTimestamp(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss.SSS"
-        return formatter.string(from: date)
+        chatViewDebugTimestampFormatter.string(from: date)
     }
 }
 
@@ -1440,7 +1754,6 @@ private struct FlowLayout: Layout {
 
 private struct ThinkingIndicator: View {
     @State private var dotScale: [CGFloat] = [1, 1, 1]
-    @State private var isAnimating = false
 
     var body: some View {
         HStack(spacing: 4) {

@@ -40,32 +40,78 @@ enum ChatCLIPromptPreferences {
 
 enum ChatCLIPromptDefaults {
     static let titleBlock = """
-TITLES
+TITLE GUIDELINES
+Core principle: If you read this title next week, would you know what you actually did?
+Be specific, but concise:
+Every title needs concrete details. Name the actual thing—the show, the person, the feature, the file, the game. But keep it scannable—aim for roughly 5-10 words. Extra details belong in the summary.
 
-Write titles like you'd answer "what were you doing?"
+Bad: "Watched videos" → Good: "The Office bloopers on YouTube"
+Bad: "Worked on UI" → Good: "Fixed navbar overlap on mobile"
+Bad: "Had a call" → Good: "Call with James about venue options"
+Bad: "Did research" → Good: "Comparing gyms near the new apartment"
+Bad: "Debugged issues" → Good: "Tracked down Stripe webhook failures"
+Bad: "Played games" → Good: "Civilization VI — finally beat Deity difficulty"
+Bad: "Browsed YouTube" → Good: "Veritasium video on turbulence"
+Bad: "Chatted with team" → Good: "Slack debate about monorepo vs multirepo"
+Bad: "Made a reservation" → Good: "Booked Nobu for Saturday 7pm"
+Bad: "Coded" → Good: "Built CSV export for transactions"
 
-Formula: [Main thing] + optional quick context
+Don't overload the title:
+If you're using em-dashes, parentheses, or listing 3+ things—you're probably cramming summary content into the title.
 
-Good:
-- "Prepped Mia's Duke interview"
-- "Japan flights with Evan"
-- "Nick Fuentes interview, then UI diagrams"
-- "Debugged auth flow in React"
-- "League game, checked DayFlow between"
-- "Watched Succession finale"
-- "Booked Denver flights on Expedia"
+Bad: "Apartment hunting — Zillow listings in Brooklyn, StreetEasy saved searches, and broker fee research"
+Good: "Apartment hunting in Brooklyn"
+Bad: "Weekly metrics review — signups, churn rate, MRR growth, and cohort retention"
+Good: "Weekly metrics review"
+Bad: "Call with Mom — talked about Dad's birthday, her knee surgery, and Aunt Linda's visit"
+Good: "Call with Mom"
 
-Bad:
-- "Twitter scrolling, YouTube video, and UI diagrams" (laundry list)
-- "Duke interview prep and DayFlow code review" (unrelated things jammed together)
-- "Extended browsing session" (vague, formal)
-- "Random browsing and activities" (says nothing)
-- "Worked on DayFlow project" (what specifically?)
-- "Early morning digital drift" (poetic fluff)
+Avoid vague words:
+These words hide what actually happened:
 
-If there's a secondary thing, make it context not a co-headline:
-- "Prepped Duke interview, League between" ✓
-- "Duke interview prep and League of Legends" ✗
+"worked on" → doing what to it?
+"looked at" → reviewing? debugging? reading?
+"handled" → fixed? ignored? escalated?
+"dealt with" → means nothing
+"various" / "some" / "multiple" → name them or pick the main one
+"deep dive" / "rabbit hole" → just say what you researched
+"sync" / "aligned" / "circled back" → say what you discussed or decided
+"browsing" / "iterations" / "analytics" → what specifically?
+
+Avoid repetitive structure:
+Don't start every title with a verb. Mix it up naturally:
+
+"Fixed the infinite scroll bug on search results"
+"Breaking Bad rewatch — season 3 finale"
+"Call with recruiter about the Stripe role"
+"AWS cost spike investigation"
+"Planning the bachelor party itinerary"
+"Stardew Valley — finished the community center"
+"iPhone vs Pixel camera comparison for Mom"
+"Morning coffee + Hacker News catch-up"
+
+If several titles in a row start with "Fixed... Debugged... Built... Reviewed..." — vary the structure.
+Use "and" sparingly:
+Don't use "and" to connect unrelated things. Pick the main activity for the title; the rest goes in the summary.
+
+Bad: "Fixed bug and replied to emails" → Good: "Fixed pagination crash" (emails in summary)
+Bad: "YouTube then coded" → Good: "Built the settings modal" (YouTube is a distraction)
+Bad: "Read articles, watched TikTok, checked Discord" → Good: "Scattered browsing" (it was scattered, just say that)
+
+"And" is okay when both parts serve the same goal:
+
+OK: "Designed and prototyped the onboarding flow"
+OK: "Researched and booked the Airbnb in Lisbon"
+OK: "Drafted and sent the investor update"
+
+When it's genuinely scattered:
+If there was no main focus—just bouncing between tabs—don't force a fake throughline:
+
+"YouTube and Twitter browsing"
+"Scattered browsing break"
+"Catching up on Reddit and Discord"
+
+Before finalizing: would this title help you remember what you actually did?
 """
 
     static let summaryBlock = """
@@ -92,10 +138,11 @@ Never use:
     static let detailedSummaryBlock = """
 DETAILED SUMMARY
 
-Granular activity log — every context switch, every app, every distinct action. This is the "show me exactly what happened" view.
+Granular activity log. This is the "show me exactly what happened" view.
 
 Format:
 [H:MM AM/PM] - [H:MM AM/PM] [specific action] [in app/tool] [on what]
+Each line should be one sentence (~25 words max). Be concise but detailed.
 
 Include:
 - Specific file/document names when visible
@@ -117,8 +164,6 @@ Bad example:
 7:30 AM - 7:35 AM Slack
 7:35 AM - 8:00 AM coding"
 (Too coarse — what doc? which Slack channel? coding what?)
-
-The goal: someone could reconstruct exactly what you did just from the detailed summary.
 """
 }
 

@@ -143,51 +143,9 @@ final class GeminiDirectProvider {
         }
     }
     
-    private func generateCurlCommand(url: String, requestBody: [String: Any]) -> String {
-        // Convert request body to JSON string with pretty printing for readability
-        guard let jsonData = try? JSONSerialization.data(withJSONObject: requestBody, options: [.prettyPrinted, .sortedKeys]),
-              let jsonString = String(data: jsonData, encoding: .utf8) else {
-            return "# Failed to generate curl command"
-        }
-        
-        // Escape single quotes in JSON for shell
-        let escapedJson = jsonString.replacingOccurrences(of: "'", with: "'\\''")
-        
-        // Build curl command with header-based authentication
-        var curlCommand = "# Replace YOUR_API_KEY with your actual API key\n"
-        curlCommand += "curl -X POST '\(url)' \\\n"
-        curlCommand += "  -H 'X-Goog-Api-Key: YOUR_API_KEY' \\\n"
-        curlCommand += "  -H 'Content-Type: application/json' \\\n"
-        curlCommand += "  -d '\(escapedJson)'"
-        
-        return curlCommand
-    }
-    
-    private func logCurlCommand(context: String, url: String, requestBody: [String: Any]) {
-        #if DEBUG
-        let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
-        print("\n📋 CURL COMMAND for \(context) at \(timestamp):")
-        print("================================================================================")
-        print(generateCurlCommand(url: url, requestBody: requestBody))
-        print("================================================================================\n")
-        #endif
-    }
-    
-    // Track request timing for rate limit analysis
-    private static var lastRequestTime: Date?
-    private static let requestQueue = DispatchQueue(label: "gemini.request.timing")
-    
-    private func logRequestTiming(context: String) {
-        Self.requestQueue.sync {
-            let now = Date()
-            if let last = Self.lastRequestTime {
-                let interval = now.timeIntervalSince(last)
-                print("⏱️ GEMINI TIMING: \(context) - \(String(format: "%.1f", interval))s since last request")
-            } else {
-                print("⏱️ GEMINI TIMING: \(context) - First request")
-            }
-            Self.lastRequestTime = now
-        }
+    private func logCallDuration(operation: String, duration: TimeInterval, status: Int? = nil) {
+        let statusText = status.map { " status=\($0)" } ?? ""
+        print("⏱️ [Gemini] \(operation) \(String(format: "%.2f", duration))s\(statusText)")
     }
 
     // Gemini sometimes streams a well-formed JSON payload before aborting with HTTP 503.
@@ -289,131 +247,48 @@ final class GeminiDirectProvider {
         // realDuration is available via compressionFactor if needed for debugging
         
         let finalTranscriptionPrompt = """
-        # Video Transcription Prompt
+        # Screen Recording Transcription (Reconstruct Mode)
 
-        Your job is to transcribe someone's computer usage into a small number of meaningful activity segments.
+        Watch this screen recording and create an activity log detailed enough that someone could reconstruct the session.
 
-        ## CRITICAL: This video is exactly \(durationString) long. ALL timestamps MUST be within 00:00 to \(durationString).
+        CRITICAL: This video is exactly \(durationString) long. ALL timestamps must be within 00:00 to \(durationString). No gaps.
 
-        ## Golden Rule: Aim for 3-8 segments for this video (fewer is better than more)
+        For each segment, ask yourself:
+        "What EXACTLY did they do? What SPECIFIC things can I see?"
 
-        ## Segment Length Guidelines:
-        - **Minimum segment length:** 12 seconds
-        - **Maximum segment length:** ~1 minute
-        - If an activity is less than 12 seconds, fold it into an adjacent segment as a brief mention
+        Capture:
+        - Exact app/site names visible
+        - Exact file names, URLs, page titles
+        - Exact usernames, search queries, messages
+        - Exact numbers, stats, prices shown
 
-        ## Core Principles:
-        1. **Group by purpose, not by platform** - If someone is planning a trip across 5 websites, that's ONE segment
-        2. **Include interruptions in the description** - Don't create segments for brief distractions
-        3. **Only split when context changes for 12+ seconds** - Quick checks don't count as context switches
-        4. **Combine related activities** - Multiple videos on the same topic = one segment
-        5. **Think in terms of "sessions"** - What would you tell a friend you spent time doing?
-        6. **Idle detection** - If the screen stays exactly the same for 30+ seconds, note that the user was idle during that period, but still be specific about what's currently on the screen.
+        Bad: "Checked email"
+        Good: "Gmail: Read email from boss@company.com 'RE: Budget approval' - replied 'Looks good'"
 
-        ## When to create a new segment:
-        Only when the user switches to a COMPLETELY different purpose for MORE than 12 seconds:
-        - Entertainment → Work
-        - Learning → Shopping  
-        - Project A → Project B
-        - Topic X → Unrelated Topic Y
+        Bad: "Browsing Twitter"
+        Good: "Twitter/X: Scrolled feed - viewed posts by @pmarca about AI, @sama thread on GPT-5 (12 tweets)"
 
-        ## Format:
-        ```json
+        Bad: "Working on code"
+        Good: "VS Code: Editing StorageManager.swift - fixed type error on line 47, changed String to String?"
+
+        Segments:
+        - 3-8 segments total
+        - You may use 1 segment only if the user appears idle for most of the recording
+        - Group by GOAL not app (IDE + Terminal + Browser for the same task = 1 segment)
+        - Do not create gaps; cover the full timeline
+
+        Return ONLY JSON in this format:
         [
           {
             "startTimestamp": "MM:SS",
-            "endTimestamp": "MM:SS", 
-            "description": "1-3 sentences describing what the user accomplished"
+            "endTimestamp": "MM:SS",
+            "description": "1-3 sentences with specific details"
           }
         ]
-        ```
-
-        ## Examples:
-
-        **GOOD - Properly condensed:**
-        ```json
-        [
-          {
-            "startTimestamp": "00:00",
-            "endTimestamp": "01:15",
-            "description": "User plans a trip to Japan, researching flights on multiple booking sites, reading hotel reviews, and watching YouTube videos about Tokyo neighborhoods. They briefly check email twice and respond to a text message during their research."
-          },
-          {
-            "startTimestamp": "01:15", 
-            "endTimestamp": "02:10",
-            "description": "User takes an online Spanish course, completing lesson exercises and watching grammar explanation videos. They use Google Translate to verify some phrases and briefly check Reddit when they get stuck on a difficult concept."
-          },
-          {
-            "startTimestamp": "02:10",
-            "endTimestamp": "03:00",
-            "description": "User shops for home gym equipment, comparing prices across Amazon, fitness retailer sites, and watching product review videos. They check their banking app to verify their budget midway through."
-          }
-        ]
-        ```
-
-        **BAD - Too many segments:**
-        ```json
-        [
-          {
-            "startTimestamp": "00:00",
-            "endTimestamp": "00:25",
-            "description": "User searches for flights to Tokyo"
-          },
-          {
-            "startTimestamp": "00:25",
-            "endTimestamp": "00:30", 
-            "description": "User checks email"
-          },
-          {
-            "startTimestamp": "00:30",
-            "endTimestamp": "00:55",
-            "description": "User looks at hotels in Tokyo"
-          },
-          {
-            "startTimestamp": "00:55",
-            "endTimestamp": "01:15",
-            "description": "User watches a Tokyo travel video"
-          }
-        ]
-        ```
-
-        **ALSO BAD - Splitting brief interruptions:**
-        ```json
-        [
-          {
-            "startTimestamp": "00:00",
-            "endTimestamp": "01:20",
-            "description": "User shops for gym equipment"
-          },
-          {
-            "startTimestamp": "01:20",
-            "endTimestamp": "01:28",
-            "description": "User checks their bank balance"
-          },
-          {
-            "startTimestamp": "01:28",
-            "endTimestamp": "03:00",
-            "description": "User continues shopping for gym equipment"
-          }
-        ]
-        ```
-
-        **CORRECT way to handle the above:**
-        ```json
-        [
-          {
-            "startTimestamp": "00:00",
-            "endTimestamp": "03:00",
-            "description": "User shops for home gym equipment across multiple retailers, comparing dumbbells, benches, and resistance bands. They briefly check their bank balance around the halfway point to confirm their budget before continuing."
-          }
-        ]
-        ```
-
-        Remember: The goal is to tell the story of what someone accomplished, not log every click. Group aggressively and only split when they truly change what they're doing for an extended period.
         """
 
         // UNIFIED RETRY LOOP - Handles ALL errors comprehensively
-        let maxRetries = 4
+        let maxRetries = 3
         var attempt = 0
         var lastError: Error?
         var finalResponse = ""
@@ -657,7 +532,7 @@ final class GeminiDirectProvider {
         case .shortBackoff:
             return pow(2.0, Double(attempt)) * 2.0  // 2s, 4s, 8s
         case .longBackoff:
-            return pow(2.0, Double(attempt)) * 30.0 // 30s, 60s, 120s
+            return Double(min(3, attempt + 1)) // 1s, 2s, 3s (capped)
         case .enhancedPrompt:
             return 1.0  // Brief delay for enhanced prompt
         case .noRetry:
@@ -1056,7 +931,11 @@ final class GeminiDirectProvider {
         request.setValue(mimeType, forHTTPHeaderField: "Content-Type")
         request.httpBody = data
 
+        let requestStart = Date()
         let (responseData, response) = try await URLSession.shared.data(for: request)
+        let requestDuration = Date().timeIntervalSince(requestStart)
+        let statusCode = (response as? HTTPURLResponse)?.statusCode
+        logCallDuration(operation: "upload.simple", duration: requestDuration, status: statusCode)
 
         if let json = try JSONSerialization.jsonObject(with: responseData) as? [String: Any],
            let file = json["file"] as? [String: Any],
@@ -1101,9 +980,7 @@ private func uploadResumable(data: Data, mimeType: String) async throws -> Strin
             throw NSError(domain: "GeminiError", code: 4, userInfo: [NSLocalizedDescriptionKey: "Non-HTTP response during upload init"])
         }
         
-        print("📡 Upload session initialized:")
-        print("   Status: \(httpResponse.statusCode)")
-        print("   Init Duration: \(String(format: "%.2f", initDuration))s")
+        logCallDuration(operation: "upload.init", duration: initDuration, status: httpResponse.statusCode)
         
         guard let uploadURL = httpResponse.value(forHTTPHeaderField: "X-Goog-Upload-URL") else {
             print("🔴 No upload URL in response")
@@ -1113,8 +990,6 @@ private func uploadResumable(data: Data, mimeType: String) async throws -> Strin
             logGeminiFailure(context: "uploadResumable(start)", response: response, data: responseData, error: nil)
             throw NSError(domain: "GeminiError", code: 4, userInfo:  [NSLocalizedDescriptionKey: "No upload URL in response"])
         }
-        
-        print("   Upload URL: \(uploadURL.prefix(80))...")
         
         var uploadRequest = URLRequest(url: URL(string: uploadURL)!)
         uploadRequest.httpMethod = "PUT"
@@ -1131,10 +1006,7 @@ private func uploadResumable(data: Data, mimeType: String) async throws -> Strin
             throw NSError(domain: "GeminiError", code: 5, userInfo: [NSLocalizedDescriptionKey: "Non-HTTP response during upload finalize"])
         }
         
-        print("📥 Upload completed:")
-        print("   Status: \(httpUploadResponse.statusCode)")
-        print("   Upload Duration: \(String(format: "%.2f", uploadDuration))s")
-        print("   Upload Speed: \(String(format: "%.2f", Double(data.count) / uploadDuration / 1024 / 1024)) MB/s")
+        logCallDuration(operation: "upload.finalize", duration: uploadDuration, status: httpUploadResponse.statusCode)
         
         if httpUploadResponse.statusCode != 200 {
             print("🔴 Upload failed with status \(httpUploadResponse.statusCode)")
@@ -1146,8 +1018,6 @@ private func uploadResumable(data: Data, mimeType: String) async throws -> Strin
         if let json = try JSONSerialization.jsonObject(with: uploadResponseData) as? [String: Any],
            let file = json["file"] as? [String: Any],
            let uri = file["uri"] as? String {
-            print("✅ Video uploaded successfully")
-            print("   File URI: \(uri)")
             return uri
         }
         
@@ -1167,7 +1037,11 @@ private func uploadResumable(data: Data, mimeType: String) async throws -> Strin
         var request = URLRequest(url: url)
         request.setValue(apiKey, forHTTPHeaderField: "X-Goog-Api-Key")
         
+        let requestStart = Date()
         let (data, response) = try await URLSession.shared.data(for: request)
+        let requestDuration = Date().timeIntervalSince(requestStart)
+        let statusCode = (response as? HTTPURLResponse)?.statusCode
+        logCallDuration(operation: "file.status", duration: requestDuration, status: statusCode)
 
         if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
            let state = json["state"] as? String {
@@ -1220,12 +1094,6 @@ private func uploadResumable(data: Data, mimeType: String) async throws -> Strin
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
 
-            // Log curl command
-            logCurlCommand(context: "transcribe.generateContent", url: endpoint, requestBody: requestBody)
-
-            // Log request timing
-            logRequestTiming(context: "transcribe")
-
             let (data, response) = try await URLSession.shared.data(for: request)
             let requestDuration = Date().timeIntervalSince(requestStart)
 
@@ -1234,20 +1102,7 @@ private func uploadResumable(data: Data, mimeType: String) async throws -> Strin
                 throw NSError(domain: "GeminiError", code: 9, userInfo: [NSLocalizedDescriptionKey: "Non-HTTP response"])
             }
 
-            print("📥 Response received:")
-            print("   Status Code: \(httpResponse.statusCode)")
-            print("   Duration: \(String(format: "%.2f", requestDuration))s")
-
-            // Log important headers
-            if let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type") {
-                print("   Content-Type: \(contentType)")
-            }
-            if let contentLength = httpResponse.value(forHTTPHeaderField: "Content-Length") {
-                print("   Content-Length: \(contentLength) bytes")
-            }
-            if let requestId = httpResponse.value(forHTTPHeaderField: "X-Goog-Request-Id") ?? httpResponse.value(forHTTPHeaderField: "x-request-id") {
-                print("   Request ID: \(requestId)")
-            }
+            logCallDuration(operation: "transcribe.generateContent", duration: requestDuration, status: httpResponse.statusCode)
 
             // Prepare logging context
             let responseHeaders: [String:String] = httpResponse.allHeaderFields.reduce(into: [:]) { acc, kv in
@@ -1535,12 +1390,6 @@ private func uploadResumable(data: Data, mimeType: String) async throws -> Strin
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
 
-            // Log curl command
-            logCurlCommand(context: "cards.generateContent", url: endpoint, requestBody: requestBody)
-
-            // Log request timing
-            logRequestTiming(context: "cards")
-
             let (data, response) = try await URLSession.shared.data(for: request)
             let requestDuration = Date().timeIntervalSince(requestStart)
 
@@ -1549,20 +1398,7 @@ private func uploadResumable(data: Data, mimeType: String) async throws -> Strin
                 throw NSError(domain: "GeminiError", code: 9, userInfo: [NSLocalizedDescriptionKey: "Non-HTTP response"])
             }
 
-            print("📥 Cards response received:")
-            print("   Status Code: \(httpResponse.statusCode)")
-            print("   Duration: \(String(format: "%.2f", requestDuration))s")
-
-            // Log important headers
-            if let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type") {
-                print("   Content-Type: \(contentType)")
-            }
-            if let contentLength = httpResponse.value(forHTTPHeaderField: "Content-Length") {
-                print("   Content-Length: \(contentLength) bytes")
-            }
-            if let requestId = httpResponse.value(forHTTPHeaderField: "X-Goog-Request-Id") ?? httpResponse.value(forHTTPHeaderField: "x-request-id") {
-                print("   Request ID: \(requestId)")
-            }
+            logCallDuration(operation: "cards.generateContent", duration: requestDuration, status: httpResponse.statusCode)
 
             // Prepare logging context
             let responseHeaders: [String:String] = httpResponse.allHeaderFields.reduce(into: [:]) { acc, kv in
@@ -2030,12 +1866,6 @@ private func uploadResumable(data: Data, mimeType: String) async throws -> Strin
         return String(format: "%d:%02d %@", displayHour, mins, period)
     }
     
-    private func formatTime(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        return formatter.string(from: date)
-    }
-    
     private func parseVideoTimestamp(_ timestamp: String) -> Int {
         let components = timestamp.components(separatedBy: ":")
         
@@ -2091,19 +1921,23 @@ private func uploadResumable(data: Data, mimeType: String) async throws -> Strin
             do {
                 print("🔄 generateText attempt \(attempt + 1)/\(maxRetries)")
                 let activeModel = modelState.current
-                let urlWithKey = endpointForModel(activeModel) + "?key=\(apiKey)"
+                let endpoint = endpointForModel(activeModel)
 
-                var request = URLRequest(url: URL(string: urlWithKey)!)
+                var request = URLRequest(url: URL(string: endpoint)!)
                 request.httpMethod = "POST"
+                request.setValue(apiKey, forHTTPHeaderField: "X-Goog-Api-Key")
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 request.timeoutInterval = 120
                 request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
 
+                let requestStart = Date()
                 let (data, response) = try await URLSession.shared.data(for: request)
 
                 guard let httpResponse = response as? HTTPURLResponse else {
                     throw NSError(domain: "GeminiError", code: 9, userInfo: [NSLocalizedDescriptionKey: "Non-HTTP response"])
                 }
+                let requestDuration = Date().timeIntervalSince(requestStart)
+                logCallDuration(operation: "generateText", duration: requestDuration, status: httpResponse.statusCode)
 
                 if httpResponse.statusCode >= 400 {
                     var errorMessage = "HTTP \(httpResponse.statusCode) error"
