@@ -8,6 +8,8 @@ struct SettingsOtherTabView: View {
         VStack(alignment: .leading, spacing: 28) {
             timelineExportCard
 
+            recordingScheduleCard
+
             SettingsCard(title: "App preferences", subtitle: "General toggles and telemetry settings") {
                 VStack(alignment: .leading, spacing: 14) {
                     Toggle(isOn: Binding(
@@ -208,5 +210,105 @@ struct SettingsOtherTabView: View {
                 Text("This will delete existing timeline cards for \(dayString) and re-run analysis. It will consume a large number of API calls.")
             }
         }
+    }
+
+    private var recordingScheduleCard: some View {
+        SettingsCard(title: "Recording schedule", subtitle: "Automatically start and stop recording at specific times") {
+            VStack(alignment: .leading, spacing: 14) {
+                Toggle(isOn: $viewModel.scheduleEnabled) {
+                    Text("Enable schedule")
+                        .font(.custom("Nunito", size: 13))
+                        .foregroundColor(.black.opacity(0.7))
+                }
+                .toggleStyle(.switch)
+
+                if viewModel.scheduleEnabled {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("Recording times")
+                            .font(.custom("Nunito", size: 12))
+                            .fontWeight(.semibold)
+                            .foregroundColor(.black.opacity(0.6))
+                            .padding(.top, 4)
+
+                        HStack(spacing: 14) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Start")
+                                    .font(.custom("Nunito", size: 11))
+                                    .foregroundColor(.black.opacity(0.5))
+                                DatePicker("", selection: $viewModel.scheduleStartTime, displayedComponents: .hourAndMinute)
+                                    .datePickerStyle(.compact)
+                                    .labelsHidden()
+                            }
+
+                            Image(systemName: "arrow.right")
+                                .foregroundColor(.black.opacity(0.35))
+                                .padding(.top, 12)
+
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("End")
+                                    .font(.custom("Nunito", size: 11))
+                                    .foregroundColor(.black.opacity(0.5))
+                                DatePicker("", selection: $viewModel.scheduleEndTime, displayedComponents: .hourAndMinute)
+                                    .datePickerStyle(.compact)
+                                    .labelsHidden()
+                            }
+                        }
+
+                        Text("Days of week")
+                            .font(.custom("Nunito", size: 12))
+                            .fontWeight(.semibold)
+                            .foregroundColor(.black.opacity(0.6))
+                            .padding(.top, 4)
+
+                        HStack(spacing: 8) {
+                            ForEach([
+                                (1, "S"),  // Sunday
+                                (2, "M"),  // Monday
+                                (3, "T"),  // Tuesday
+                                (4, "W"),  // Wednesday
+                                (5, "T"),  // Thursday
+                                (6, "F"),  // Friday
+                                (7, "S")   // Saturday
+                            ], id: \.0) { day, label in
+                                dayButton(day: day, label: label)
+                            }
+                        }
+
+                        Text("Recording will automatically start and stop during scheduled times on selected days.")
+                            .font(.custom("Nunito", size: 11.5))
+                            .foregroundColor(.black.opacity(0.55))
+                            .padding(.top, 4)
+                    }
+                }
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    private func dayButton(day: Int, label: String) -> some View {
+        let isSelected = viewModel.scheduleDays.contains(day)
+
+        return Button {
+            if isSelected {
+                viewModel.scheduleDays.remove(day)
+            } else {
+                viewModel.scheduleDays.insert(day)
+            }
+        } label: {
+            Text(label)
+                .font(.custom("Nunito", size: 13))
+                .fontWeight(.semibold)
+                .foregroundColor(isSelected ? .white : .black.opacity(0.6))
+                .frame(width: 32, height: 32)
+                .background(
+                    Circle()
+                        .fill(isSelected ? Color(red: 0.25, green: 0.17, blue: 0) : Color.white.opacity(0.6))
+                )
+                .overlay(
+                    Circle()
+                        .stroke(isSelected ? Color.clear : Color.black.opacity(0.2), lineWidth: 1)
+                )
+        }
+        .buttonStyle(PlainButtonStyle())
     }
 }

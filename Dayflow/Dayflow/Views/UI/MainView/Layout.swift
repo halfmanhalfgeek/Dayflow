@@ -349,7 +349,7 @@ extension MainView {
 
             Spacer()
 
-            // Recording toggle (now inline with header)
+            // Recording control (toggle or clock icon based on schedule)
             HStack(spacing: 4) {
                 Text("Record")
                     .font(
@@ -358,11 +358,21 @@ extension MainView {
                     )
                     .foregroundColor(Color(red: 0.62, green: 0.44, blue: 0.36))
 
-                Toggle("Record", isOn: $appState.isRecording)
-                    .labelsHidden()
-                    .toggleStyle(SunriseGlassPillToggleStyle())
-                    .scaleEffect(0.7)
-                    .accessibilityLabel(Text("Recording"))
+                if scheduleManager.scheduleEnabled {
+                    // Show clock icon when schedule is active
+                    Image(systemName: "clock.fill")
+                        .font(.system(size: 20))
+                        .foregroundColor(appState.isRecording ? .red : .gray)
+                        .frame(width: 44, height: 22)
+                        .accessibilityLabel(Text(appState.isRecording ? "Recording (scheduled)" : "Not recording (scheduled)"))
+                } else {
+                    // Show toggle when schedule is disabled
+                    Toggle("Record", isOn: $appState.isRecording)
+                        .labelsHidden()
+                        .toggleStyle(SunriseGlassPillToggleStyle())
+                        .scaleEffect(0.7)
+                        .accessibilityLabel(Text("Recording"))
+                }
             }
         }
         .padding(.horizontal, 10)
