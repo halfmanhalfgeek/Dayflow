@@ -62,6 +62,7 @@ struct MainView: View {
     @StateObject var scheduleManager = RecordingScheduleManager.shared
     @State var weeklyHoursFrame: CGRect = .zero
     @State var timelineTimeLabelFrames: [CGRect] = []
+    @State var timelineFailureToastPayload: TimelineFailureToastPayload?
 
     let rateSummaryFooterHeight: CGFloat = 28
     let weeklyHoursFadeDistance: CGFloat = 12
