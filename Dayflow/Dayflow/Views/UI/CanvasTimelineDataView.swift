@@ -51,6 +51,11 @@ private struct CanvasPositionedActivity: Identifiable {
     let faviconSecondaryHost: String?
 }
 
+private struct RecordingProjectionWindow {
+    let start: Date
+    let end: Date
+}
+
 struct CanvasTimelineDataView: View {
     @Binding var selectedDate: Date
     @Binding var selectedActivity: TimelineActivity?
@@ -60,9 +65,9 @@ struct CanvasTimelineDataView: View {
 
     @State private var selectedCardId: String? = nil
     @State private var positionedActivities: [CanvasPositionedActivity] = []
+    @State private var recordingProjection: RecordingProjectionWindow?
     @State private var refreshTimer: Timer?
     @State private var didInitialScrollInView: Bool = false
-    @State private var isBreathing = false
     @State private var loadTask: Task<Void, Never>?
     // Staggered entrance animation state (Emil Kowalski principle: sequential reveal)
     @State private var cardEntranceProgress: [String: Bool] = [:]
@@ -149,6 +154,9 @@ struct CanvasTimelineDataView: View {
         .onChange(of: refreshTrigger) {
             loadActivities()
         }
+        .onChange(of: appState.isRecording) {
+            loadActivities(animate: false)
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             loadActivities(animate: false)
             if refreshTimer == nil {
@@ -174,11 +182,12 @@ struct CanvasTimelineDataView: View {
             hourLines
                 .padding(.leading, CanvasConfig.timeColumnWidth)
 
-            // Current time indicator
-            currentTimeIndicator
-
             // Main content with time labels and cards
             mainTimelineRow
+
+            // Current time indicator/status card (kept above cards so paused taps work)
+            currentTimeIndicator
+                .zIndex(10)
         }
         .frame(height: CGFloat(CanvasConfig.endHour - CanvasConfig.startHour) * CanvasConfig.hourHeight)
         .background(Color.clear)
@@ -226,48 +235,59 @@ struct CanvasTimelineDataView: View {
             }
         }
         .frame(width: CanvasConfig.timeColumnWidth)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            clearSelection()
+        }
+        .pointingHandCursor(enabled: selectedCardId != nil || selectedActivity != nil)
     }
 
     private var cardsLayer: some View {
-        ZStack(alignment: .topLeading) {
-            Color.clear
-            ForEach(Array(positionedActivities.enumerated()), id: \.element.id) { index, item in
-                let isVisible = cardEntranceProgress[item.id] ?? false
-                CanvasActivityCard(
-                    title: item.title,
-                    time: item.timeLabel,
-                    height: item.height,
-                    durationMinutes: item.durationMinutes,
-                    style: style(for: item.categoryName),
-                    isSelected: selectedCardId == item.id,
-                    isSystemCategory: item.categoryName.trimmingCharacters(in: .whitespacesAndNewlines)
-                        .caseInsensitiveCompare("System") == .orderedSame,
-                    isBackupGenerated: item.activity.isBackupGenerated == true,
-                    onTap: {
-                        if selectedCardId == item.id {
-                            selectedCardId = nil
-                            selectedActivity = nil
-                        } else {
-                            selectedCardId = item.id
-                            selectedActivity = item.activity
-                        }
-                    },
-                    faviconPrimaryRaw: item.faviconPrimaryRaw,
-                    faviconSecondaryRaw: item.faviconSecondaryRaw,
-                    faviconPrimaryHost: item.faviconPrimaryHost,
-                    faviconSecondaryHost: item.faviconSecondaryHost,
-                    statusLine: retryCoordinator.statusLine(for: item.activity.batchId)
-                )
-                .frame(height: item.height)
-                .offset(y: item.yPosition)
-                // Staggered entrance animation (Emil Kowalski: sequential reveal creates polish)
-                .opacity(isVisible ? 1 : 0)
-                .offset(x: isVisible ? 0 : 12)
-                .animation(
-                    .spring(response: 0.35, dampingFraction: 0.8)
-                        .delay(Double(index) * 0.03), // 30ms stagger between cards
-                    value: isVisible
-                )
+        GeometryReader { geo in
+            ZStack(alignment: .topLeading) {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        clearSelection()
+                    }
+                    .pointingHandCursor(enabled: selectedCardId != nil || selectedActivity != nil)
+                ForEach(Array(positionedActivities.enumerated()), id: \.element.id) { index, item in
+                    let isVisible = cardEntranceProgress[item.id] ?? false
+                    CanvasActivityCard(
+                        title: item.title,
+                        time: item.timeLabel,
+                        height: item.height,
+                        durationMinutes: item.durationMinutes,
+                        style: style(for: item.categoryName),
+                        isSelected: selectedCardId == item.id,
+                        isSystemCategory: item.categoryName.trimmingCharacters(in: .whitespacesAndNewlines)
+                            .caseInsensitiveCompare("System") == .orderedSame,
+                        isBackupGenerated: item.activity.isBackupGenerated == true,
+                        onTap: {
+                            if selectedCardId == item.id {
+                                clearSelection()
+                            } else {
+                                selectedCardId = item.id
+                                selectedActivity = item.activity
+                            }
+                        },
+                        faviconPrimaryRaw: item.faviconPrimaryRaw,
+                        faviconSecondaryRaw: item.faviconSecondaryRaw,
+                        faviconPrimaryHost: item.faviconPrimaryHost,
+                        faviconSecondaryHost: item.faviconSecondaryHost,
+                        statusLine: retryCoordinator.statusLine(for: item.activity.batchId)
+                    )
+                    .frame(width: geo.size.width, height: item.height)
+                    .position(x: geo.size.width / 2, y: item.yPosition + (item.height / 2))
+                    // Staggered entrance animation (Emil Kowalski: sequential reveal creates polish)
+                    .opacity(isVisible ? 1 : 0)
+                    .offset(x: isVisible ? 0 : 12)
+                    .animation(
+                        .spring(response: 0.35, dampingFraction: 0.8)
+                            .delay(Double(index) * 0.03), // 30ms stagger between cards
+                        value: isVisible
+                    )
+                }
             }
         }
         .clipped() // Prevent shadows/animations from affecting scroll geometry
@@ -283,68 +303,180 @@ struct CanvasTimelineDataView: View {
 
     @ViewBuilder
     private var currentTimeIndicator: some View {
-        if timelineIsToday(selectedDate) {
-            VStack(alignment: .leading, spacing: 5) {
-                // Horizontal line with circle on left edge
-                ZStack(alignment: .leading) {
-                    Rectangle()
-                        .fill(Color(hex: "FF986C"))
-                        .frame(maxWidth: .infinity, maxHeight: 1)
-
-                    ZStack {
-                        // Outer glow layer - intense red pulse
-                        Circle()
-                            .fill(Color(hex: "FF5D44"))
-                            .frame(width: 7, height: 7)
-                            .blur(radius: isBreathing ? 8 : 3)
-                            .opacity(isBreathing ? 0.8 : 0.4)
-                            .scaleEffect(isBreathing ? 2.0 : 1.2)
-
-                        // Mid glow layer
-                        Circle()
-                            .fill(Color(hex: "FF5D44"))
-                            .frame(width: 7, height: 7)
-                            .blur(radius: isBreathing ? 5 : 2)
-                            .opacity(isBreathing ? 0.9 : 0.5)
-                            .scaleEffect(isBreathing ? 1.6 : 1.1)
-
-                        // Core dot - stays solid
-                        Circle()
-                            .fill(Color(hex: "FF5D44"))
-                            .frame(width: 7, height: 7)
-                            .scaleEffect(isBreathing ? 1.1 : 1.0)
-                    }
-                    .animation(
-                        isBreathing
-                            ? .easeInOut(duration: 1.5).repeatForever(autoreverses: true)
-                            : .easeInOut(duration: 0.3),
-                        value: isBreathing
-                    )
-                }
-                .frame(height: 1)
-                .onAppear {
-                    // Delay setting isBreathing to allow the view to settle first
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        isBreathing = appState.isRecording
+        if timelineIsToday(selectedDate), let projection = recordingProjection {
+            if appState.isRecording {
+                let projectionHeight = recordingProjectionHeight(for: projection)
+                let isCompactProjection = projectionHeight < 24
+                timelineStatusCard(
+                    height: projectionHeight,
+                    yPosition: calculateYPosition(for: projection.start) + 1,
+                    gradient: recordingStatusGradient,
+                    gradientOpacity: 0.70,
+                    baseColor: Color(hex: "D9C6BA"),
+                    strokeColor: Color.white.opacity(0.52),
+                    strokeWidth: 0.75,
+                    shadowColor: .black.opacity(0.10),
+                    shadowRadius: 4
+                ) {
+                    if !isCompactProjection {
+                        generatingStatusText
                     }
                 }
-                .onChange(of: appState.isRecording) { _, newValue in
-                    isBreathing = newValue
+            } else {
+                let projectionHeight = recordingProjectionHeight(for: projection)
+                timelineStatusCard(
+                    height: projectionHeight,
+                    yPosition: calculateYPosition(for: projection.start) + 1,
+                    gradient: pausedStatusGradient,
+                    gradientOpacity: 1.0,
+                    baseColor: .clear,
+                    strokeColor: .white,
+                    strokeWidth: 1,
+                    shadowColor: .black.opacity(0.03),
+                    shadowRadius: 2,
+                    onTap: handlePausedStatusCardTap
+                ) {
+                    pausedStatusText
                 }
-
-                // Status text
-                Text(appState.isRecording
-                    ? "Recording is in process. The timeline will update every 20-25 minutes."
-                    : "Dayflow is paused.")
-                    .font(.custom("Nunito", size: 12))
-                    .foregroundColor(Color(red: 0.62, green: 0.44, blue: 0.36))
-                    .padding(.leading, 8)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .offset(y: calculateYPosition(for: Date()))
-            .padding(.leading, CanvasConfig.timeColumnWidth)
-            .allowsHitTesting(false) // Don't interfere with card interactions
         }
+    }
+
+    @ViewBuilder
+    private func timelineStatusCard<Content: View>(
+        height: CGFloat,
+        yPosition: CGFloat,
+        gradient: LinearGradient,
+        gradientOpacity: Double,
+        baseColor: Color,
+        strokeColor: Color,
+        strokeWidth: CGFloat,
+        shadowColor: Color,
+        shadowRadius: CGFloat,
+        onTap: (() -> Void)? = nil,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        HStack(spacing: 0) {
+            content()
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: height,
+            maxHeight: height,
+            alignment: .leading
+        )
+        .background(
+            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                .fill(baseColor)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(gradient)
+                        .opacity(gradientOpacity)
+                )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                .inset(by: 0.375)
+                .stroke(strokeColor, lineWidth: strokeWidth)
+        )
+        .shadow(color: shadowColor, radius: shadowRadius, x: 0, y: 0)
+        .padding(.horizontal, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .offset(y: yPosition)
+        .padding(.leading, CanvasConfig.timeColumnWidth)
+        .pointingHandCursor(enabled: onTap != nil)
+        .onTapGesture {
+            onTap?()
+        }
+        .allowsHitTesting(onTap != nil)
+    }
+
+    private var recordingStatusGradient: LinearGradient {
+        LinearGradient(
+            stops: [
+                .init(color: Color(hex: "5E7FC0"), location: 0.00),
+                .init(color: Color(hex: "D88ECE"), location: 0.35),
+                .init(color: Color(hex: "FFC19E"), location: 0.68),
+                .init(color: Color(hex: "FFEDE0"), location: 1.00)
+            ],
+            startPoint: .leading,
+            endPoint: .trailing
+        )
+    }
+
+    private var pausedStatusGradient: LinearGradient {
+        LinearGradient(
+            stops: [
+                .init(color: Color(hex: "F7E6D5"), location: 0.13),
+                .init(color: Color(hex: "DADEE4"), location: 1.00)
+            ],
+            startPoint: .leading,
+            endPoint: .trailing
+        )
+    }
+
+    private var generatingStatusText: some View {
+        HStack(spacing: 8) {
+            TimelineThinkingSpinner(
+                config: timelineSpinnerConfig,
+                visualScale: 0.5
+            )
+            Text("Generating your next card")
+        }
+        .font(
+            Font.custom("Nunito", size: 12)
+                .weight(.semibold)
+        )
+        .lineSpacing(2.4)
+        .tracking(0)
+        .foregroundColor(.white)
+        .lineLimit(1)
+        .truncationMode(.tail)
+    }
+
+    private var pausedStatusText: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "pause.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(Color(hex: "888D95"))
+            Text("Dayflow is paused. Click 'Record' to generate new activity cards.")
+        }
+        .font(
+            Font.custom("Nunito", size: 12)
+                .weight(.regular)
+        )
+        .lineSpacing(2.4)
+        .tracking(0)
+        .foregroundColor(Color(hex: "888D95"))
+        .lineLimit(1)
+        .truncationMode(.tail)
+    }
+
+    @MainActor
+    private func handlePausedStatusCardTap() {
+        guard !appState.isRecording else { return }
+        AnalyticsService.shared.capture("timeline_paused_card_clicked", [
+            "action": "resume_recording"
+        ])
+        PauseManager.shared.resume(source: .userClickedMainApp)
+    }
+
+    private func clearSelection() {
+        guard selectedCardId != nil || selectedActivity != nil else { return }
+        selectedCardId = nil
+        selectedActivity = nil
+    }
+
+    private var timelineSpinnerConfig: TimelineSpinnerConfig {
+        var config = TimelineSpinnerConfig.reference
+        config.gap = 1.0
+        config.colorDim = .init(0.263, 0.365, 0.592) // #435D97
+        config.colorMid = .init(0.722, 0.518, 0.737) // #B884BC
+        config.colorHot = .init(0.965, 0.745, 0.455) // #F6BE74
+        return config
     }
 
 
@@ -377,6 +509,11 @@ struct CanvasTimelineDataView: View {
             // so that smaller cards "win". This is a display-only fix to handle
             // upstream card-generation overlap bugs without touching stored data.
             let segments = self.resolveOverlapsForDisplay(activities)
+            let recordingProjection = self.computeRecordingProjectionWindow(
+                timelineDate: timelineDate,
+                displaySegments: segments,
+                now: Date()
+            )
 
             let positioned = segments.map { seg -> CanvasPositionedActivity in
                 let y = self.calculateYPosition(for: seg.start)
@@ -415,6 +552,7 @@ struct CanvasTimelineDataView: View {
                     self.cardEntranceProgress = [:]
                 }
                 self.positionedActivities = positioned
+                self.recordingProjection = recordingProjection
                 self.hasAnyActivities = !positioned.isEmpty
 
                 if animate {
@@ -641,6 +779,70 @@ struct CanvasTimelineDataView: View {
         }
 
         return segments
+    }
+
+    private func recordingProjectionHeight(for projection: RecordingProjectionWindow) -> CGFloat {
+        let durationMinutes = max(0, projection.end.timeIntervalSince(projection.start) / 60)
+        let rawHeight = CGFloat(durationMinutes) * CanvasConfig.pixelsPerMinute
+        return max(10, rawHeight - 2)
+    }
+
+    private func computeRecordingProjectionWindow(
+        timelineDate: Date,
+        displaySegments: [DisplaySegment],
+        now: Date
+    ) -> RecordingProjectionWindow? {
+        guard timelineIsToday(timelineDate, now: now) else { return nil }
+
+        let dayInfo = timelineDate.getDayInfoFor4AMBoundary()
+        let dayStart = dayInfo.startOfDay
+        let dayEnd = dayInfo.endOfDay
+        let cycleDuration: TimeInterval = 15 * 60
+        let hardCap: TimeInterval = 40 * 60
+        guard cycleDuration > 0 else { return nil }
+
+        let centeredStart = now.addingTimeInterval(-(cycleDuration / 2))
+        var windowStart = max(dayStart, centeredStart)
+        var windowEnd = windowStart.addingTimeInterval(cycleDuration)
+        if windowEnd > dayEnd {
+            windowEnd = dayEnd
+            windowStart = max(dayStart, windowEnd.addingTimeInterval(-cycleDuration))
+        }
+        windowEnd = min(windowEnd, windowStart.addingTimeInterval(hardCap))
+
+        if windowEnd <= windowStart {
+            return nil
+        }
+
+        let sortedSegments = displaySegments.sorted { $0.start < $1.start }
+
+        var moved = true
+        while moved {
+            moved = false
+            for segment in sortedSegments {
+                let intersects = segment.end > windowStart && segment.start < windowEnd
+                if intersects {
+                    windowStart = segment.end
+                    windowEnd = windowStart.addingTimeInterval(cycleDuration)
+                    if windowEnd > dayEnd {
+                        windowEnd = dayEnd
+                        windowStart = max(dayStart, windowEnd.addingTimeInterval(-cycleDuration))
+                    }
+                    windowEnd = min(windowEnd, windowStart.addingTimeInterval(hardCap))
+                    moved = true
+                    break
+                }
+            }
+            if windowStart >= dayEnd {
+                return nil
+            }
+        }
+
+        if windowEnd <= windowStart {
+            return nil
+        }
+
+        return RecordingProjectionWindow(start: windowStart, end: windowEnd)
     }
 
     private func startRefreshTimer() {
@@ -917,6 +1119,8 @@ struct CanvasActivityCard: View {
             )
         }
         .buttonStyle(CanvasCardButtonStyle())
+        .pointingHandCursor()
+        .hoverScaleEffect(scale: 1.01)
         .padding(.horizontal, 6)
     }
 }

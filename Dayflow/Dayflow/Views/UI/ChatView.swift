@@ -19,7 +19,8 @@ struct ChatView: View {
     @ObservedObject private var chatService = ChatService.shared
     @State private var inputText = ""
     @State private var showWorkDetails = false
-    @FocusState private var isInputFocused: Bool
+    @State private var isInputFocused = false
+    @State private var composerFocusToken = 0
     @Namespace private var bottomID
     @AppStorage("chatCLIPreferredTool") private var selectedTool: String = "codex"
     @AppStorage("hasChatBetaAccepted") private var hasBetaAccepted: Bool = false
@@ -29,6 +30,8 @@ struct ChatView: View {
     @State private var showToolSwitchConfirm = false
     @State private var pendingToolSelection: String?
     @State private var conversationId: UUID?
+    @State private var didAnimateWelcome = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var isUnlocked: Bool {
         hasBetaAccepted
@@ -36,6 +39,45 @@ struct ChatView: View {
 
     private var cliEnabled: Bool {
         hasBetaAccepted || cliDetected
+    }
+
+    private var welcomePrompts: [WelcomePrompt] {
+        [
+            WelcomePrompt(icon: "doc.text", text: "Generate standup notes for yesterday"),
+            WelcomePrompt(icon: "checkmark.seal", text: "What did I get done last week?"),
+            WelcomePrompt(icon: "exclamationmark.bubble", text: "What distracted me the most this past week?"),
+            WelcomePrompt(icon: "sparkles", text: "Pull my data from the last week and tell me something interesting")
+        ]
+    }
+
+    private var welcomeHeroAnimation: Animation {
+        if reduceMotion {
+            return .easeOut(duration: 0.01)
+        }
+        return .timingCurve(0.16, 1, 0.3, 1, duration: 0.42)
+    }
+
+    private func welcomeSuggestionAnimation(at index: Int) -> Animation {
+        if reduceMotion {
+            return .easeOut(duration: 0.01)
+        }
+        return .timingCurve(0.16, 1, 0.3, 1, duration: 0.34)
+            .delay(Double(index) * 0.045)
+    }
+
+    private var trimmedInputText: String {
+        inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var canSubmitCurrentInput: Bool {
+        !chatService.isProcessing && !trimmedInputText.isEmpty
+    }
+
+    private var composerBorderColor: Color {
+        if isInputFocused {
+            return Color(hex: "F4A867")
+        }
+        return Color(hex: "E5D8CA")
     }
 
     var body: some View {
@@ -53,7 +95,6 @@ struct ChatView: View {
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
-        .preferredColorScheme(.light)
         .task {
             guard !didCheckCLI else { return }
             didCheckCLI = true
@@ -101,6 +142,7 @@ struct ChatView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Clear chat")
+                    .pointingHandCursor()
                 }
 
                 // Debug toggle
@@ -111,6 +153,7 @@ struct ChatView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Toggle debug panel")
+                .pointingHandCursor()
             }
             .padding(.trailing, 12)
             .padding(.top, 8)
@@ -169,6 +212,11 @@ struct ChatView: View {
                     }
                 }
             }
+            .onChange(of: chatService.messages.isEmpty) { _, isEmpty in
+                if isEmpty {
+                    didAnimateWelcome = false
+                }
+            }
 
             Divider()
                 .background(Color(hex: "ECECEC"))
@@ -176,7 +224,13 @@ struct ChatView: View {
             // Input area
             inputArea
         }
-        .background(Color(hex: "FFFAF5"))
+        .background(
+            LinearGradient(
+                colors: [Color(hex: "FFFAF5"), Color(hex: "FFF6EC")],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
     }
 
     // MARK: - Debug Panel
@@ -198,6 +252,7 @@ struct ChatView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Copy all")
+                .pointingHandCursor()
 
                 Button(action: { chatService.clearDebugLog() }) {
                     Image(systemName: "trash")
@@ -206,6 +261,7 @@ struct ChatView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Clear log")
+                .pointingHandCursor()
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -236,37 +292,86 @@ struct ChatView: View {
     // MARK: - Welcome View
 
     private var welcomeView: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "bubble.left.and.bubble.right.fill")
-                .font(.system(size: 36))
-                .foregroundColor(Color(hex: "F96E00").opacity(0.6))
+        VStack(spacing: 0) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.white.opacity(0.86), Color(hex: "FFF8EF").opacity(0.95)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                            .stroke(Color(hex: "F5DFC7"), lineWidth: 1)
+                    )
+                    .shadow(color: Color(hex: "E7B98E").opacity(0.24), radius: 20, x: 0, y: 10)
 
-            Text("Ask about your day")
-                .font(.custom("InstrumentSerif-Regular", size: 24))
-                .foregroundColor(Color(hex: "333333"))
+                VStack(spacing: 16) {
+                    HStack(alignment: .center, spacing: 12) {
+                        ZStack {
+                            Circle()
+                                .fill(
+                                    LinearGradient(
+                                        colors: [Color(hex: "FFE5CD"), Color(hex: "FFCF9D")],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                            Image(systemName: "bubble.left.and.bubble.right.fill")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundColor(Color(hex: "C9670D"))
+                        }
+                        .frame(width: 42, height: 42)
 
-            Text("Try questions like:")
-                .font(.custom("Nunito", size: 13).weight(.medium))
-                .foregroundColor(Color(hex: "666666"))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Ask about your day")
+                                .font(.custom("InstrumentSerif-Regular", size: 30))
+                                .foregroundColor(Color(hex: "2F2A24"))
 
-            VStack(alignment: .leading, spacing: 10) {
-                SuggestionChip(text: "Generate standup notes for yesterday") {
-                    sendMessage("Generate standup notes for yesterday")
+                            Text("Turn your timeline into instant answers.")
+                                .font(.custom("Nunito", size: 13).weight(.semibold))
+                                .foregroundColor(Color(hex: "7D6B5B"))
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Try one of these")
+                            .font(.custom("Nunito", size: 12).weight(.bold))
+                            .foregroundColor(Color(hex: "8A7765"))
+
+                        ForEach(Array(welcomePrompts.enumerated()), id: \.offset) { index, prompt in
+                            WelcomeSuggestionRow(prompt: prompt) {
+                                sendMessage(prompt.text)
+                            }
+                            .opacity(didAnimateWelcome ? 1 : 0)
+                            .offset(y: didAnimateWelcome ? 0 : 8)
+                            .animation(welcomeSuggestionAnimation(at: index), value: didAnimateWelcome)
+                        }
+                    }
                 }
-                SuggestionChip(text: "What did I get done last week?") {
-                    sendMessage("What did I get done last week?")
-                }
-                SuggestionChip(text: "What distracted me the most this past week?") {
-                    sendMessage("What distracted me the most this past week?")
-                }
-                SuggestionChip(text: "Pull my data from the last week and tell me something interesting") {
-                    sendMessage("Pull my data from the last week and tell me something interesting")
+                .padding(.horizontal, 24)
+                .padding(.top, 22)
+                .padding(.bottom, 24)
+            }
+            .frame(maxWidth: 760)
+            .opacity(didAnimateWelcome ? 1 : 0)
+            .scaleEffect(reduceMotion ? 1 : (didAnimateWelcome ? 1 : 0.985))
+            .blur(radius: reduceMotion || didAnimateWelcome ? 0 : 6)
+            .onAppear {
+                guard !didAnimateWelcome else { return }
+                withAnimation(welcomeHeroAnimation) {
+                    didAnimateWelcome = true
                 }
             }
-            .padding(.top, 8)
+
+            Spacer(minLength: 8)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.bottom, 40)
+        .frame(maxWidth: .infinity, minHeight: 420, alignment: .top)
+        .padding(.bottom, 24)
     }
 
     // MARK: - Beta Lock Screen
@@ -415,24 +520,18 @@ struct ChatView: View {
     private var inputArea: some View {
         VStack(spacing: 0) {
             // Text input
-            TextField(
-                "",
+            AppKitComposerTextField(
                 text: $inputText,
-                prompt: Text("Ask about your day...")
-                    .font(.custom("Nunito", size: 13).weight(.medium))
-                    .foregroundColor(Color(hex: "AAAAAA"))
+                isFocused: $isInputFocused,
+                focusToken: composerFocusToken,
+                placeholder: "Ask about your day...",
+                onSubmit: submitCurrentInputIfAllowed
             )
-            .textFieldStyle(.plain)
-            .font(.custom("Nunito", size: 13).weight(.medium))
-            .foregroundColor(Color(hex: "333333"))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .frame(height: 36)
-            .focused($isInputFocused)
-            .disabled(chatService.isProcessing)
-            .onSubmit {
-                sendMessage(inputText)
-            }
+            .frame(height: 50, alignment: .leading)
+
+            Rectangle()
+                .fill(Color(hex: "EEE4D8"))
+                .frame(height: 1)
 
             // Bottom toolbar
             HStack(spacing: 8) {
@@ -441,8 +540,29 @@ struct ChatView: View {
 
                 Spacer()
 
+                if chatService.isProcessing {
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .scaleEffect(0.55)
+                            .tint(Color(hex: "C18043"))
+                        Text("Answering")
+                            .font(.custom("Nunito", size: 11).weight(.bold))
+                            .foregroundColor(Color(hex: "9B7753"))
+                    }
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(
+                        Capsule()
+                            .fill(Color(hex: "FFF3E6"))
+                    )
+                    .overlay(
+                        Capsule()
+                            .stroke(Color(hex: "F0CBA7"), lineWidth: 1)
+                    )
+                }
+
                 // Send button
-                Button(action: { sendMessage(inputText) }) {
+                Button(action: { submitCurrentInputIfAllowed() }) {
                     ZStack {
                         if chatService.isProcessing {
                             ProgressView()
@@ -454,31 +574,60 @@ struct ChatView: View {
                                 .foregroundColor(.white)
                         }
                     }
-                    .frame(width: 28, height: 28)
+                    .frame(width: 32, height: 32)
                     .background(
-                        inputText.isEmpty || chatService.isProcessing
-                            ? Color(hex: "CCCCCC")
-                            : Color(hex: "F96E00")
+                        canSubmitCurrentInput
+                            ? LinearGradient(
+                                colors: [Color(hex: "FAA457"), Color(hex: "F96E00")],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                            : LinearGradient(
+                                colors: [Color(hex: "DDDDDD"), Color(hex: "CECECE")],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
                     )
                     .clipShape(Circle())
+                    .overlay(
+                        Circle()
+                            .stroke(Color.white.opacity(0.55), lineWidth: 0.8)
+                    )
+                    .shadow(
+                        color: canSubmitCurrentInput ? Color(hex: "D37E2D").opacity(0.35) : Color.clear,
+                        radius: 8,
+                        x: 0,
+                        y: 3
+                    )
                 }
-                .buttonStyle(.plain)
-                .disabled(inputText.isEmpty || chatService.isProcessing)
+                .buttonStyle(PressScaleButtonStyle(isEnabled: canSubmitCurrentInput))
+                .disabled(!canSubmitCurrentInput)
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .frame(height: 44)
+            .padding(.vertical, 9)
+            .frame(minHeight: 48)
         }
-        .background(Color.white)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(
-                    isInputFocused ? Color(hex: "F96E00").opacity(0.5) : Color(hex: "E0E0E0"),
-                    lineWidth: 1
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [Color.white, Color(hex: "FFF8F0")],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
                 )
         )
-        .fixedSize(horizontal: false, vertical: true)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(composerBorderColor, lineWidth: isInputFocused ? 1.2 : 1)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .inset(by: 0.6)
+                .stroke(Color.white.opacity(0.65), lineWidth: 0.8)
+        )
+        .shadow(color: Color(hex: "D99A5A").opacity(0.14), radius: 14, x: 0, y: 6)
+        .animation(.easeOut(duration: 0.16), value: isInputFocused)
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
     }
@@ -502,12 +651,12 @@ struct ChatView: View {
         }
         .padding(4)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.white)
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(Color.white.opacity(0.84))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color(hex: "E6E6E6"), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke(Color(hex: "E4D6C8"), lineWidth: 1)
         )
         .opacity(cliEnabled ? 1.0 : 0.6)
         .help(cliEnabled ? "Choose CLI provider" : "Install Codex or Claude CLI to enable")
@@ -533,6 +682,7 @@ struct ChatView: View {
                     SuggestionChip(text: suggestion) {
                         inputText = suggestion
                         isInputFocused = true
+                        composerFocusToken += 1
                     }
                 }
             }
@@ -542,9 +692,15 @@ struct ChatView: View {
 
     // MARK: - Actions
 
+    private func submitCurrentInputIfAllowed() {
+        guard canSubmitCurrentInput else { return }
+        sendMessage(trimmedInputText)
+    }
+
     private func sendMessage(_ text: String) {
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        let messageText = text
+        guard !chatService.isProcessing else { return }
+        let messageText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !messageText.isEmpty else { return }
         inputText = ""
 
         // Track conversation for analytics
@@ -678,6 +834,9 @@ private struct MessageBubble: View {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .stroke(Color(hex: "E8E8E8"), lineWidth: 1)
             )
+            .environment(\.openURL, OpenURLAction { url in
+                handleAssistantLinkTap(url)
+            })
             Spacer(minLength: 60)
         }
     }
@@ -708,6 +867,49 @@ private struct MessageBubble: View {
             .foregroundColor(Color(hex: "333333"))
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func handleAssistantLinkTap(_ url: URL) -> OpenURLAction.Result {
+        guard let externalURL = normalizedExternalURL(from: url) else {
+            print("[ChatView] Blocked unsupported URL: \(url.absoluteString)")
+            return .discarded
+        }
+
+        let configuration = NSWorkspace.OpenConfiguration()
+        NSWorkspace.shared.open(externalURL, configuration: configuration) { _, error in
+            if let error {
+                print("[ChatView] Failed opening URL \(externalURL.absoluteString): \(error.localizedDescription)")
+            }
+        }
+        return .handled
+    }
+
+    private func normalizedExternalURL(from rawURL: URL) -> URL? {
+        if let scheme = rawURL.scheme?.lowercased() {
+            switch scheme {
+            case "http", "https", "mailto":
+                return rawURL
+            default:
+                return nil
+            }
+        }
+
+        let trimmed = rawURL.absoluteString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let prefixed = trimmed.hasPrefix("//")
+            ? "https:\(trimmed)"
+            : "https://\(trimmed)"
+
+        guard let normalized = URL(string: prefixed),
+              let scheme = normalized.scheme?.lowercased(),
+              (scheme == "http" || scheme == "https"),
+              let host = normalized.host,
+              !host.isEmpty else {
+            return nil
+        }
+
+        return normalized
     }
 }
 
@@ -1384,6 +1586,7 @@ private struct WorkStatusCard: View {
                         .foregroundColor(Color(hex: "8B5E3C"))
                     }
                     .buttonStyle(.plain)
+                    .pointingHandCursor()
                 }
 
                 if showDetails, !status.thinkingText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1572,6 +1775,273 @@ private struct ToolStatusRow: View {
     }
 }
 
+private struct AppKitComposerTextField: NSViewRepresentable {
+    @Binding var text: String
+    @Binding var isFocused: Bool
+    let focusToken: Int
+    let placeholder: String
+    let onSubmit: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeNSView(context: Context) -> ComposerTextField {
+        let textField = ComposerTextField()
+        textField.delegate = context.coordinator
+        textField.stringValue = text
+        textField.font = NSFont(name: "Nunito-Medium", size: 16) ?? NSFont.systemFont(ofSize: 16, weight: .medium)
+        textField.textColor = NSColor(hex: "2F2A24") ?? .labelColor
+        textField.alignment = .left
+        textField.lineBreakMode = .byTruncatingTail
+        textField.maximumNumberOfLines = 1
+        textField.usesSingleLineMode = true
+        textField.focusRingType = .none
+        textField.isBordered = false
+        textField.isBezeled = false
+        textField.drawsBackground = false
+        textField.isEditable = true
+        textField.isSelectable = true
+        textField.translatesAutoresizingMaskIntoConstraints = false
+        textField.configurePlaceholder(
+            placeholder,
+            font: NSFont(name: "Nunito-Medium", size: 16) ?? NSFont.systemFont(ofSize: 16, weight: .medium),
+            color: NSColor(hex: "9B948D") ?? .secondaryLabelColor
+        )
+        return textField
+    }
+
+    func updateNSView(_ nsView: ComposerTextField, context: Context) {
+        context.coordinator.parent = self
+
+        if nsView.stringValue != text {
+            nsView.stringValue = text
+        }
+        nsView.refreshPlaceholderVisibility()
+
+        if context.coordinator.lastFocusToken != focusToken {
+            context.coordinator.lastFocusToken = focusToken
+            DispatchQueue.main.async {
+                nsView.window?.makeFirstResponder(nsView)
+            }
+        }
+
+        if isFocused, nsView.window?.firstResponder !== nsView.currentEditor() {
+            DispatchQueue.main.async {
+                nsView.window?.makeFirstResponder(nsView)
+            }
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: AppKitComposerTextField
+        var lastFocusToken: Int = -1
+
+        init(parent: AppKitComposerTextField) {
+            self.parent = parent
+        }
+
+        func controlTextDidBeginEditing(_ obj: Notification) {
+            parent.isFocused = true
+        }
+
+        func controlTextDidEndEditing(_ obj: Notification) {
+            parent.isFocused = false
+        }
+
+        func controlTextDidChange(_ obj: Notification) {
+            guard let field = obj.object as? NSTextField else { return }
+            parent.text = field.stringValue
+            (field as? ComposerTextField)?.refreshPlaceholderVisibility()
+        }
+
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+                parent.onSubmit()
+                return true
+            }
+            return false
+        }
+    }
+}
+
+private final class ComposerTextField: NSTextField {
+    private let placeholderLabel = NSTextField(labelWithString: "")
+
+    var composerCell: ComposerTextFieldCell? {
+        cell as? ComposerTextFieldCell
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        cell = ComposerTextFieldCell(textCell: "")
+        composerCell?.horizontalInset = 14
+        composerCell?.verticalInset = 0
+        configurePlaceholderLabel()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        cell = ComposerTextFieldCell(textCell: "")
+        composerCell?.horizontalInset = 14
+        composerCell?.verticalInset = 0
+        configurePlaceholderLabel()
+    }
+
+    override var stringValue: String {
+        didSet {
+            refreshPlaceholderVisibility()
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        guard let cell = composerCell else { return }
+        placeholderLabel.frame = cell.titleRect(forBounds: bounds)
+    }
+
+    func configurePlaceholder(_ text: String, font: NSFont, color: NSColor) {
+        placeholderLabel.stringValue = text
+        placeholderLabel.font = font
+        placeholderLabel.textColor = color
+        refreshPlaceholderVisibility()
+        needsLayout = true
+    }
+
+    func refreshPlaceholderVisibility() {
+        placeholderLabel.isHidden = !stringValue.isEmpty
+    }
+
+    private func configurePlaceholderLabel() {
+        placeholderLabel.isEditable = false
+        placeholderLabel.isSelectable = false
+        placeholderLabel.isBordered = false
+        placeholderLabel.drawsBackground = false
+        placeholderLabel.lineBreakMode = .byTruncatingTail
+        placeholderLabel.maximumNumberOfLines = 1
+        addSubview(placeholderLabel)
+    }
+}
+
+private final class ComposerTextFieldCell: NSTextFieldCell {
+    var horizontalInset: CGFloat = 14
+    var verticalInset: CGFloat = 0
+
+    override func drawingRect(forBounds rect: NSRect) -> NSRect {
+        centeredRect(forBounds: super.drawingRect(forBounds: rect))
+    }
+
+    override func titleRect(forBounds rect: NSRect) -> NSRect {
+        centeredRect(forBounds: super.titleRect(forBounds: rect))
+    }
+
+    override func edit(
+        withFrame aRect: NSRect,
+        in controlView: NSView,
+        editor textObj: NSText,
+        delegate: Any?,
+        event: NSEvent?
+    ) {
+        super.edit(
+            withFrame: titleRect(forBounds: aRect),
+            in: controlView,
+            editor: textObj,
+            delegate: delegate,
+            event: event
+        )
+    }
+
+    override func select(
+        withFrame aRect: NSRect,
+        in controlView: NSView,
+        editor textObj: NSText,
+        delegate: Any?,
+        start selStart: Int,
+        length selLength: Int
+    ) {
+        super.select(
+            withFrame: titleRect(forBounds: aRect),
+            in: controlView,
+            editor: textObj,
+            delegate: delegate,
+            start: selStart,
+            length: selLength
+        )
+    }
+
+    private func centeredRect(forBounds rect: NSRect) -> NSRect {
+        var insetRect = rect.insetBy(dx: horizontalInset, dy: verticalInset)
+        let textHeight = (font?.ascender ?? 10) - (font?.descender ?? -4) + (font?.leading ?? 0)
+        let yOffset = (insetRect.height - textHeight) / 2
+        insetRect.origin.y += max(0, yOffset.rounded(.down) - 0.5)
+        insetRect.size.height = textHeight
+        return insetRect.integral
+    }
+}
+
+private struct WelcomePrompt {
+    let icon: String
+    let text: String
+}
+
+private struct WelcomeSuggestionRow: View {
+    let prompt: WelcomePrompt
+    let action: () -> Void
+
+    @State private var isHovered = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: prompt.icon)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(Color(hex: "C9670D"))
+                    .frame(width: 24, height: 24)
+                    .background(
+                        Circle()
+                            .fill(Color(hex: "FFF0E1"))
+                    )
+
+                Text(prompt.text)
+                    .font(.custom("Nunito", size: 13).weight(.semibold))
+                    .foregroundColor(Color(hex: "5C432F"))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .multilineTextAlignment(.leading)
+                    .lineLimit(2)
+
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(Color(hex: "D58A3D"))
+                    .padding(.trailing, 2)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(isHovered ? Color.white.opacity(0.88) : Color.white.opacity(0.7))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Color(hex: "EED7BF"), lineWidth: 1)
+            )
+            .scaleEffect(reduceMotion ? 1 : (isHovered ? 1.01 : 1))
+            .offset(y: reduceMotion ? 0 : (isHovered ? -1 : 0))
+        }
+        .buttonStyle(.plain)
+        .pointingHandCursor()
+        .onHover { hovering in
+            guard !reduceMotion else {
+                isHovered = false
+                return
+            }
+            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18)) {
+                isHovered = hovering
+            }
+        }
+    }
+}
+
 // MARK: - Suggestion Chip
 
 private struct SuggestionChip: View {
@@ -1598,6 +2068,7 @@ private struct SuggestionChip: View {
                 .scaleEffect(isHovered ? 1.02 : 1.0)
         }
         .buttonStyle(.plain)
+        .pointingHandCursor()
         .onHover { hovering in
             withAnimation(.spring(response: 0.2, dampingFraction: 0.7)) {
                 isHovered = hovering
@@ -1608,6 +2079,18 @@ private struct SuggestionChip: View {
 
 // MARK: - Beta Button Style (hover + press animations)
 
+private struct PressScaleButtonStyle: ButtonStyle {
+    let isEnabled: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed && isEnabled ? 0.97 : 1.0)
+            .brightness(configuration.isPressed && isEnabled ? -0.02 : 0)
+            .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
+            .pointingHandCursor(enabled: isEnabled)
+    }
+}
+
 private struct BetaButtonStyle: ButtonStyle {
     let isEnabled: Bool
 
@@ -1615,6 +2098,7 @@ private struct BetaButtonStyle: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed && isEnabled ? 0.97 : 1.0)
             .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
+            .pointingHandCursor(enabled: isEnabled)
     }
 }
 
@@ -1657,6 +2141,7 @@ private struct ProviderTogglePill: View {
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)
+        .pointingHandCursor(enabled: isEnabled)
     }
 }
 

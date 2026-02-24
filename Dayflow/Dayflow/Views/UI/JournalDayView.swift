@@ -143,6 +143,7 @@ struct JournalPillButtonStyle: ButtonStyle {
             )
             .scaleEffect(configuration.isPressed ? 0.96 : 1.0)
             .animation(.spring(response: 0.3, dampingFraction: 0.6), value: configuration.isPressed)
+            .pointingHandCursor()
     }
 }
 
@@ -159,8 +160,6 @@ struct JournalDayView: View {
     @State private var transitionDirection: AnyTransition = .identity
     @State private var pageId = UUID()
     
-    @AppStorage("showJournalDebugPanel") private var showDebugPanel = false
-
     init(onSetReminders: (() -> Void)? = nil) {
         self.onSetReminders = onSetReminders
     }
@@ -189,9 +188,7 @@ struct JournalDayView: View {
             .padding(.bottom, 10)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-            if showDebugPanel {
-                DebugPanelView(manager: manager)
-            }
+
         }
         .onAppear {
             manager.loadCurrentDay()
@@ -346,33 +343,6 @@ extension JournalDayView {
                 .padding(.trailing, 20)
             }
         }
-    }
-}
-
-// MARK: - Debug Panel
-private struct DebugPanelView: View {
-    @ObservedObject var manager: JournalDayManager
-    @AppStorage("isJournalUnlocked") private var isJournalUnlocked: Bool = false
-    @AppStorage("hasCompletedJournalOnboarding") private var hasCompletedOnboarding: Bool = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Debug")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(.white.opacity(0.7))
-            Button("🔒 Lock") { isJournalUnlocked = false }.font(.system(size: 9))
-            Button("🔄 Reset") { hasCompletedOnboarding = false; isJournalUnlocked = false }.font(.system(size: 9))
-            Divider().background(Color.white.opacity(0.3))
-            Button("→ Intro") { manager.flowState = .intro }.font(.system(size: 9))
-            Button("→ Summary") { manager.flowState = .summary }.font(.system(size: 9))
-            Button("→ Intents") { manager.flowState = .intentionsEdit }.font(.system(size: 9))
-            Button("→ Prompt") { manager.flowState = .reflectionPrompt }.font(.system(size: 9))
-        }
-        .frame(maxWidth: 100)
-        .padding(6)
-        .background(Color.black.opacity(0.75))
-        .cornerRadius(6)
-        .padding(8)
     }
 }
 
@@ -533,6 +503,7 @@ private struct IntentionsEditForm: View {
                         .clipShape(Circle())
                 }
                 .buttonStyle(.plain)
+                .pointingHandCursor()
                 Spacer()
             }
             .padding(.horizontal, 12)
@@ -783,6 +754,7 @@ private struct JournalLeftCardView: View {
         .onTapGesture {
             onTap?()
         }
+        .pointingHandCursor(enabled: onTap != nil)
     }
 
     @ViewBuilder
@@ -889,6 +861,7 @@ private struct ReflectionEditorCard: View {
                 Button("Skip", action: onSkip)
                     .buttonStyle(.plain)
                     .foregroundStyle(JournalDayTokens.bodyText.opacity(0.6))
+                    .pointingHandCursor()
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
         }
@@ -940,6 +913,7 @@ private struct ReflectionSavedCard: View {
                         HStack(spacing: 12) {
                             Button("Dismiss") { onDismissError?() }
                                 .buttonStyle(.plain).font(.custom("Nunito-Regular", size: 13)).foregroundStyle(JournalDayTokens.bodyText.opacity(0.6))
+                                .pointingHandCursor()
                             Button("Try again", action: onSummarize)
                                 .buttonStyle(JournalPillButtonStyle(horizontalPadding: 18, verticalPadding: 8))
                         }
@@ -1003,6 +977,7 @@ private struct SummaryCard: View {
                         .foregroundStyle(JournalDayTokens.sectionHeader)
                 }
                 .buttonStyle(.plain)
+                .pointingHandCursor()
             }
             Spacer(minLength: 0)
         }
@@ -1112,6 +1087,7 @@ private struct JournalDayCircleButton: View {
         }
         .buttonStyle(.plain)
         .disabled(isDisabled)
+        .pointingHandCursor(enabled: !isDisabled)
     }
 }
 
@@ -1131,6 +1107,7 @@ private struct JournalDaySegmentedControl: View {
                         .cornerRadius(200)
                 }
                 .buttonStyle(.plain)
+                .pointingHandCursor()
             }
         }
         .padding(2)

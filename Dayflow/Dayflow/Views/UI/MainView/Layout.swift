@@ -144,6 +144,18 @@ extension MainView {
                     timelineFailureToastPayload = payload
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .timelineDataUpdated)) { notification in
+                guard selectedIcon == .timeline else { return }
+
+                if let refreshedDay = notification.userInfo?["dayString"] as? String {
+                    let selectedTimelineDay = DateFormatter.yyyyMMdd.string(
+                        from: timelineDisplayDate(from: selectedDate, now: Date())
+                    )
+                    guard refreshedDay == selectedTimelineDay else { return }
+                }
+
+                updateCardsToReviewCount()
+            }
             .onChange(of: selectedDate) { _, newDate in
                 // If changed via picker, emit navigation now
                 if let method = lastDateNavMethod, method == "picker" {
@@ -287,7 +299,7 @@ extension MainView {
         ZStack {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Color.white)
-                .shadow(color: .black.opacity(0.08), radius: 6, x: 0, y: 0)
+                .shadow(color: .black.opacity(0.04), radius: 4, x: 0, y: 0)
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Color.white)
                 .blendMode(.destinationOut)
@@ -360,6 +372,8 @@ extension MainView {
                             .frame(width: 26, height: 26)
                     }
                     .buttonStyle(PlainButtonStyle())
+                    .hoverScaleEffect(scale: 1.02)
+                    .pointingHandCursorOnHover(reassertOnPressEnd: true)
 
                     Button(action: {
                         guard canNavigateForward(from: selectedDate) else { return }
@@ -381,6 +395,14 @@ extension MainView {
                     }
                     .buttonStyle(PlainButtonStyle())
                     .disabled(!canNavigateForward(from: selectedDate))
+                    .hoverScaleEffect(
+                        enabled: canNavigateForward(from: selectedDate),
+                        scale: 1.02
+                    )
+                    .pointingHandCursorOnHover(
+                        enabled: canNavigateForward(from: selectedDate),
+                        reassertOnPressEnd: true
+                    )
                 }
             }
             .offset(x: timelineOffset)
@@ -498,9 +520,7 @@ extension MainView {
                             if selectedActivity?.batchId == batchId {
                                 selectedActivity = nil
                             }
-                        },
-                        videoNamespace: videoHeroNamespace,
-                        videoExpansionState: videoExpansionState
+                        }
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .allowsHitTesting(!feedbackModalVisible)
@@ -691,6 +711,14 @@ extension MainView {
         }
         .buttonStyle(ShrinkButtonStyle())
         .disabled(copyTimelineState == .copying)
+        .hoverScaleEffect(
+            enabled: copyTimelineState != .copying,
+            scale: 1.02
+        )
+        .pointingHandCursorOnHover(
+            enabled: copyTimelineState != .copying,
+            reassertOnPressEnd: true
+        )
         .accessibilityLabel(Text("Copy timeline to clipboard"))
     }
 }
@@ -729,6 +757,8 @@ private struct TimelineFailureToastView: View {
                         .frame(width: 18, height: 18)
                 }
                 .buttonStyle(.plain)
+                .hoverScaleEffect(scale: 1.02)
+                .pointingHandCursorOnHover(reassertOnPressEnd: true)
             }
 
             DayflowSurfaceButton(

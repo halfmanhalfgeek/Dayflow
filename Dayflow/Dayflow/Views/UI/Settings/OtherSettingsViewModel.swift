@@ -11,12 +11,6 @@ final class OtherSettingsViewModel: ObservableObject {
             AnalyticsService.shared.setOptIn(analyticsEnabled)
         }
     }
-    @Published var showJournalDebugPanel: Bool {
-        didSet {
-            guard showJournalDebugPanel != oldValue else { return }
-            UserDefaults.standard.set(showJournalDebugPanel, forKey: "showJournalDebugPanel")
-        }
-    }
     @Published var showDockIcon: Bool {
         didSet {
             guard showDockIcon != oldValue else { return }
@@ -83,15 +77,8 @@ final class OtherSettingsViewModel: ObservableObject {
     @Published var exportStatusMessage: String?
     @Published var exportErrorMessage: String?
 
-    @Published var reprocessDayDate: Date
-    @Published var isReprocessingDay = false
-    @Published var reprocessStatusMessage: String?
-    @Published var reprocessErrorMessage: String?
-    @Published var showReprocessDayConfirm = false
-
     init() {
         analyticsEnabled = AnalyticsService.shared.isOptedIn
-        showJournalDebugPanel = UserDefaults.standard.object(forKey: "showJournalDebugPanel") as? Bool ?? false
         showDockIcon = UserDefaults.standard.object(forKey: "showDockIcon") as? Bool ?? true
         
         // Initialize schedule settings
@@ -105,7 +92,6 @@ final class OtherSettingsViewModel: ObservableObject {
         outputLanguageOverride = LLMOutputLanguagePreferences.override
         exportStartDate = timelineDisplayDate(from: Date())
         exportEndDate = timelineDisplayDate(from: Date())
-        reprocessDayDate = timelineDisplayDate(from: Date())
     }
 
     func markOutputLanguageOverrideEdited() {
@@ -184,32 +170,6 @@ final class OtherSettingsViewModel: ObservableObject {
                 )
             }
         }
-    }
-
-    func reprocessSelectedDay() {
-        guard !isReprocessingDay else { return }
-
-        let normalizedDate = timelineDisplayDate(from: reprocessDayDate)
-        let dayString = DateFormatter.yyyyMMdd.string(from: normalizedDate)
-
-        isReprocessingDay = true
-        reprocessErrorMessage = nil
-        reprocessStatusMessage = "Starting reprocess for \(dayString)…"
-
-        AnalysisManager.shared.reprocessDay(dayString, progressHandler: { [weak self] message in
-            self?.reprocessStatusMessage = message
-        }, completion: { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case .success:
-                if self.reprocessStatusMessage == nil {
-                    self.reprocessStatusMessage = "Reprocess completed."
-                }
-            case .failure(let error):
-                self.reprocessErrorMessage = error.localizedDescription
-            }
-            self.isReprocessingDay = false
-        })
     }
 
     @MainActor
