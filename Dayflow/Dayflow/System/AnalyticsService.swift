@@ -4,7 +4,7 @@
 //
 //  Centralized analytics wrapper for PostHog. Provides
 //  - identity management via PostHog distinct ID
-//  - opt-in gate (default ON)
+//  - opt-in gate (default OFF — user must explicitly enable)
 //  - super properties and person properties
 //  - sampling and throttling helpers
 //  - safe, PII-free capture helpers and bucketing utils
@@ -27,8 +27,8 @@ final class AnalyticsService {
     var isOptedIn: Bool {
         get {
             if UserDefaults.standard.object(forKey: optInKey) == nil {
-                // Default ON per product decision
-                return true
+                // Default OFF — require explicit opt-in before sending telemetry
+                return false
             }
             return UserDefaults.standard.bool(forKey: optInKey)
         }
@@ -270,7 +270,7 @@ final class AnalyticsService {
 
     private func sanitize(_ props: [String: Any]) -> [String: Any] {
         // Drop known sensitive keys if ever passed by mistake
-        let blocked = Set(["api_key", "token", "authorization", "file_path", "url", "window_title", "clipboard", "screen_content"]) 
+        let blocked = Set(["api_key", "token", "authorization", "file_path", "url", "window_title", "clipboard", "screen_content", "host"]) 
         var out: [String: Any] = [:]
         for (k, v) in props {
             if blocked.contains(k) { continue }

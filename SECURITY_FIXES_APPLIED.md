@@ -89,16 +89,69 @@ All `print()` statements in `retrieve()` are now inside `#if DEBUG` blocks. In R
 
 ---
 
+### 8. ✅ Block `host` Key in AnalyticsService Sanitiser (Medium)
+**File:** `Dayflow/Dayflow/System/AnalyticsService.swift`
+
+`FaviconService` sends the domain name of every failed favicon fetch to PostHog via `AnalyticsService.capture("favicon_fetch_failed", ["host": host])`. This leaks which websites the user visits.
+
+Added `"host"` to the `blocked` key set in `sanitize()`, so the property is silently dropped before any event reaches PostHog.
+
+```swift
+// Before
+let blocked = Set(["api_key", "token", "authorization", "file_path", "url", "window_title", "clipboard", "screen_content"])
+
+// After
+let blocked = Set(["api_key", "token", "authorization", "file_path", "url", "window_title", "clipboard", "screen_content", "host"])
+```
+
+---
+
+### 9. ✅ Analytics Default Changed to Opt-In (Medium)
+**Files:**
+- `Dayflow/Dayflow/System/AnalyticsService.swift`
+- `Dayflow/Dayflow/App/AppDelegate.swift`
+
+Analytics was enabled by default from first launch — before the user had any opportunity to consent. The `isOptedIn` getter returned `true` when no preference existed in UserDefaults.
+
+Changed the default to `false`. New users will not send any telemetry to PostHog or Sentry until they explicitly enable analytics in Settings. Existing users who already have a stored preference are unaffected.
+
+```swift
+// Before
+if UserDefaults.standard.object(forKey: optInKey) == nil {
+    return true   // tracked from first launch
+}
+
+// After
+if UserDefaults.standard.object(forKey: optInKey) == nil {
+    return false  // off until user explicitly enables
+}
+```
+
+---
+
+### 10. ✅ Sentry `beforeSend` PII Scrubbing (Medium)
+**File:** `Dayflow/Dayflow/Utilities/SentryHelper.swift`
+
+Crash reports sent to Sentry could leak personal data: file paths containing the macOS username (e.g. `/Users/jon/Library/…`), the machine hostname, IP address, and device name.
+
+Added a `beforeSend` hook that scrubs every event before it leaves the device:
+- **User object** stripped entirely (no IP, device name, or username)
+- **Server name** (hostname) set to nil
+- **Home-directory paths** replaced with `/Users/[redacted]/` via regex across exception messages, breadcrumb messages, breadcrumb data, context, tags, and extra fields
+- `sendDefaultPii` explicitly set to `false`
+
+---
+
 ### Remaining Recommendations
 
 The following items from the Round 2 audit are not yet addressed:
 
 **Medium priority:**
 - Encrypt SQLite database (SQLCipher) — stores screen activity data and LLM request/response bodies
-- Add Sentry `beforeSend` data scrubbing to filter PII from crash reports
-- Change analytics default from opt-in to opt-out (currently tracks from first launch)
+- ~~Add Sentry `beforeSend` data scrubbing to filter PII from crash reports~~ — **Fixed (see §10 below)**
+- ~~Change analytics default from opt-in to opt-out (currently tracks from first launch)~~ — **Fixed (see §9 below)**
 - Add confirmation dialog or origin validation to `dayflow://` deep link handler
-- Block `host` key in `AnalyticsService.sanitize()` (FaviconService leaks visited domains to PostHog)
+- ~~Block `host` key in `AnalyticsService.sanitize()` (FaviconService leaks visited domains to PostHog)~~ — **Fixed (see §8 below)**
 
 **Low priority:**
 - Remove tracked `xcuserdata/jerry.xcuserdatad/` files from git history

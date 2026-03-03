@@ -42,7 +42,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Configure crash reporting (Sentry) from shared telemetry preference.
         SentryHelper.setEnabled(AnalyticsService.shared.isOptedIn)
 
-        // Configure analytics (prod only; default opt-in ON)
+        // Configure analytics (prod only; default opt-in OFF until user enables)
         let info = Bundle.main.infoDictionary
         let POSTHOG_API_KEY = info?["PHPostHogApiKey"] as? String ?? ""
         let POSTHOG_HOST = info?["PHPostHogHost"] as? String ?? "https://us.i.posthog.com"
