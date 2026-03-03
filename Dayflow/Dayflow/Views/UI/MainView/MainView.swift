@@ -62,6 +62,7 @@ struct MainView: View {
     @StateObject var scheduleManager = RecordingScheduleManager.shared
     @State var weeklyHoursFrame: CGRect = .zero
     @State var timelineTimeLabelFrames: [CGRect] = []
+    @State var weeklyHoursIntersectsCard: Bool = false
     @State var timelineFailureToastPayload: TimelineFailureToastPayload?
 
     let rateSummaryFooterHeight: CGFloat = 28
@@ -84,5 +85,14 @@ struct MainView: View {
 
     var body: some View {
         mainLayout
+            .onReceive(NotificationCenter.default.publisher(for: .navigateToDaily)) { notification in
+                if let dayString = notification.userInfo?["day"] as? String,
+                   let dayDate = DateFormatter.yyyyMMdd.date(from: dayString) {
+                    setSelectedDate(dayDate)
+                }
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                    selectedIcon = .daily
+                }
+            }
     }
 }
