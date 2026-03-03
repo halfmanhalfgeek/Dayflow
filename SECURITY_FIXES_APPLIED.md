@@ -1,13 +1,121 @@
 # Security Fixes Applied to Dayflow
 
-## Date: 2026-01-23
+---
 
-## Summary
-I've applied critical security fixes to address the most severe issues found in the security audit. These changes significantly improve the security posture of the application, particularly around API key handling.
+## Round 2 — 2026-03-03
+
+### Summary
+A second security audit identified critical and high-severity issues that were missed or introduced since the first round. Four fixes were applied across 6 files. All changes compile cleanly and do not alter functionality.
 
 ---
 
-## Critical Issues Fixed
+### 4. ✅ API Key Leaked in URL — GeminiAPIHelper (Critical)
+**File:** `Dayflow/Dayflow/Utilities/GeminiAPIHelper.swift`
+
+The `testConnection()` method was still placing the API key in the URL query string — the same class of bug fixed in `GeminiDirectProvider` during Round 1, but missed in this file.
+
+```swift
+// Before
+let url = URL(string: "\(baseURL)?key=\(apiKey)")!
+
+// After
+let url = URL(string: baseURL)!
+request.setValue(apiKey, forHTTPHeaderField: "X-Goog-Api-Key")
+```
+
+---
+
+### 5. ✅ API Key Leaked in URL — GemmaBackupProvider (Critical)
+**File:** `Dayflow/Dayflow/Core/AI/GemmaBackupProvider.swift`
+
+The backup provider's `callGenerateContent()` method had the same issue.
+
+```swift
+// Before
+let url = URL(string: "\(baseURL)/\(model):generateContent?key=\(apiKey)")!
+
+// After
+let url = URL(string: "\(baseURL)/\(model):generateContent")!
+request.setValue(apiKey, forHTTPHeaderField: "X-Goog-Api-Key")
+```
+
+---
+
+### 6. ✅ Custom API Key Moved from UserDefaults to Keychain (High)
+**Files:**
+- `Dayflow/Dayflow/Core/AI/OllamaProvider.swift`
+- `Dayflow/Dayflow/Views/Onboarding/LLMProviderSetupView.swift`
+- `Dayflow/Dayflow/Views/UI/Settings/ProvidersSettingsViewModel.swift`
+
+The custom LLM endpoint API key (used for LiteLLM, OpenRouter, etc.) was stored in `UserDefaults` under the key `llmLocalAPIKey`. UserDefaults is an unencrypted plist readable by any process running as the same user.
+
+All reads and writes now go through `KeychainManager` with the provider key `"localLLM"`, consistent with how the Gemini key is already stored.
+
+```swift
+// Before (read)
+UserDefaults.standard.string(forKey: "llmLocalAPIKey")
+
+// After (read)
+KeychainManager.shared.retrieve(for: "localLLM")
+
+// Before (write)
+UserDefaults.standard.set(trimmed, forKey: "llmLocalAPIKey")
+
+// After (write)
+KeychainManager.shared.store(trimmed, for: "localLLM")
+```
+
+---
+
+### 7. ✅ All KeychainManager Logging Wrapped in #if DEBUG (High)
+**File:** `Dayflow/Dayflow/Core/Security/KeychainManager.swift`
+
+Round 1 wrapped only the API key prefix log line in `#if DEBUG`. The `retrieve()` method still printed provider names, service identifiers, keychain error codes, and data byte counts in production builds.
+
+All `print()` statements in `retrieve()` are now inside `#if DEBUG` blocks. In Release builds the method is completely silent.
+
+---
+
+### Round 2 — Files Modified
+
+1. `Dayflow/Dayflow/Utilities/GeminiAPIHelper.swift` — API key moved from URL to header
+2. `Dayflow/Dayflow/Core/AI/GemmaBackupProvider.swift` — API key moved from URL to header
+3. `Dayflow/Dayflow/Core/AI/OllamaProvider.swift` — Reads custom key from Keychain
+4. `Dayflow/Dayflow/Views/Onboarding/LLMProviderSetupView.swift` — Reads/writes custom key via Keychain
+5. `Dayflow/Dayflow/Views/UI/Settings/ProvidersSettingsViewModel.swift` — Reads/writes custom key via Keychain
+6. `Dayflow/Dayflow/Core/Security/KeychainManager.swift` — All retrieve() logging wrapped in #if DEBUG
+
+**Total:** 6 files modified, 0 functionality changes.
+
+---
+
+### Remaining Recommendations
+
+The following items from the Round 2 audit are not yet addressed:
+
+**Medium priority:**
+- Encrypt SQLite database (SQLCipher) — stores screen activity data and LLM request/response bodies
+- Add Sentry `beforeSend` data scrubbing to filter PII from crash reports
+- Change analytics default from opt-in to opt-out (currently tracks from first launch)
+- Add confirmation dialog or origin validation to `dayflow://` deep link handler
+- Block `host` key in `AnalyticsService.sanitize()` (FaviconService leaks visited domains to PostHog)
+
+**Low priority:**
+- Remove tracked `xcuserdata/jerry.xcuserdatad/` files from git history
+- Disclose Google S2 favicon domain lookups in privacy policy
+- Consider fetching favicons directly rather than via Google
+
+---
+---
+
+## Round 1 — 2026-01-23
+
+### Summary
+Critical security fixes applied to address the most severe issues found in the initial security audit, particularly around API key handling.
+
+---
+
+### Critical Issues Fixed
 
 ### 1. ✅ API Key Logging Eliminated in Production
 **File:** `Dayflow/Core/Security/KeychainManager.swift`
@@ -155,24 +263,9 @@ In Xcode, check that you're running a Release build for maximum security.
 
 ---
 
-## What's Still Recommended (But Not Critical)
+### What Was Still Recommended After Round 1
 
-While I've fixed the **critical** issues, here are additional improvements you should consider:
-
-### High Priority (Do Soon)
-1. **Encrypt local screen recordings** - Currently stored unencrypted at `~/Library/Application Support/Dayflow/recordings/`
-2. **Encrypt SQLite database** - Consider using SQLCipher
-3. **Make analytics opt-in** - Currently defaults to opt-out
-4. **Add Sentry data scrubbing** - Filter sensitive data from crash reports
-
-### Medium Priority
-5. **Add authentication to URL schemes** - `dayflow://` deeplinks need validation
-6. **Improve input validation** - For LLM response parsing
-
-### Documentation
-7. **Add comprehensive privacy policy**
-8. **Document third-party data sharing**
-9. **Security audit recommendations**
+See "Remaining Recommendations" in the Round 2 section above for the current status of these items.
 
 ---
 
@@ -214,7 +307,7 @@ If you encounter build errors or runtime issues with the fixed version, please n
 
 ---
 
-## Summary of Files Modified
+### Round 1 — Files Modified
 
 1. `Dayflow/Dayflow/Core/Security/KeychainManager.swift`
    - Lines ~117-123: Added #if DEBUG wrapper around sensitive logging
@@ -223,40 +316,9 @@ If you encounter build errors or runtime issues with the fixed version, please n
    - Lines ~146-164: Updated generateCurlCommand() to show header auth
    - Lines ~176-183: Wrapped logCurlCommand() in #if DEBUG
    - Lines ~1062-1067: Fixed uploadSimple() to use headers
-   - Lines ~1095-1100: Fixed uploadResumable() to use headers  
+   - Lines ~1095-1100: Fixed uploadResumable() to use headers
    - Lines ~1172-1180: Fixed getFileStatus() to use headers
    - Lines ~1222-1234: Fixed geminiTranscribeRequest() to use headers
    - Lines ~1537-1549: Fixed geminiCardsRequest() to use headers
 
 **Total:** 2 files modified, 7 functions updated, 0 functionality changes
-
----
-
-## Technical Notes
-
-### Why Headers Are More Secure Than URL Parameters
-
-1. **Not Logged by Default:** Most web servers log URLs but not request headers
-2. **Not in Browser History:** URLs with secrets can leak through browser history
-3. **Not in Referer Headers:** Secrets in URLs can leak when following links
-4. **Industry Standard:** OAuth, JWT, and most modern APIs use header-based auth
-5. **Proxy-Safe:** Corporate proxies often log full URLs
-
-### Why #if DEBUG Is Important
-
-The Swift compiler completely removes code within `#if DEBUG` blocks when building Release configurations. This means:
-- Zero performance overhead
-- Code cannot be reverse-engineered from Release builds
-- No runtime checks needed
-- Completely eliminated from production
-
----
-
-## Next Steps
-
-1. ✅ **Build the fixed version** (see instructions above)
-2. ✅ **Test thoroughly** with your Gemini API key
-3. ⚠️ **Consider additional security measures** (encryption, etc.)
-4. ⚠️ **Keep this document** for future reference
-
-Remember: These fixes address the most **critical** issues. The app is now significantly more secure, but should still be used with caution given that it handles sensitive screen recording data.

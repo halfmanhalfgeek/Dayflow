@@ -57,13 +57,8 @@ final class KeychainManager {
     /// - Parameter provider: The provider identifier
     /// - Returns: The API key if found, nil otherwise
     func retrieve(for provider: String) -> String? {
-        let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
-        print("\n🔐 [KeychainManager] Retrieving key for '\(provider)' at \(timestamp)")
-        
         return queue.sync {
             let service = "\(servicePrefix).\(provider)"
-            print("   Service: \(service)")
-            print("   Account: \(provider)")
             
             let query: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
@@ -76,7 +71,12 @@ final class KeychainManager {
             var result: AnyObject?
             let status = SecItemCopyMatching(query as CFDictionary, &result)
             
-            // Log the status code for debugging
+            #if DEBUG
+            let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+            print("\n🔐 [KeychainManager] Retrieving key for '\(provider)' at \(timestamp)")
+            print("   Service: \(service)")
+            print("   Account: \(provider)")
+            
             switch status {
             case errSecSuccess:
                 print("✅ [KeychainManager] SecItemCopyMatching succeeded")
@@ -94,23 +94,28 @@ final class KeychainManager {
             default:
                 print("❌ [KeychainManager] Unknown error code: \(status)")
             }
+            #endif
             
             guard status == errSecSuccess else {
+                #if DEBUG
                 print("   Failed with status: \(status)")
+                #endif
                 return nil
             }
             
             guard let data = result as? Data else {
+                #if DEBUG
                 print("❌ [KeychainManager] Result is not Data type")
                 print("   Result type: \(type(of: result))")
+                #endif
                 return nil
             }
             
-            print("   Retrieved data: \(data.count) bytes")
-            
             guard let apiKey = String(data: data, encoding: .utf8) else {
+                #if DEBUG
                 print("❌ [KeychainManager] Failed to decode data as UTF-8 string")
                 print("   Raw data (hex): \(data.map { String(format: "%02x", $0) }.prefix(20).joined())")
+                #endif
                 return nil
             }
             
@@ -118,8 +123,6 @@ final class KeychainManager {
             print("✅ [KeychainManager] Successfully retrieved key")
             print("   Key length: \(apiKey.count) characters")
             print("   Key prefix: \(apiKey.prefix(8))...")
-            #else
-            print("✅ [KeychainManager] Successfully retrieved key")
             #endif
             
             return apiKey

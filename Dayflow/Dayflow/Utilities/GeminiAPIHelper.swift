@@ -39,9 +39,10 @@ class GeminiAPIHelper {
             throw APIError.invalidAPIKey
         }
         
-        let url = URL(string: "\(baseURL)?key=\(apiKey)")!
+        let url = URL(string: baseURL)!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.setValue(apiKey, forHTTPHeaderField: "X-Goog-Api-Key")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
         // Simple test request

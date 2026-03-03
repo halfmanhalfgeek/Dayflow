@@ -25,7 +25,7 @@ final class OllamaProvider {
         (UserDefaults.standard.string(forKey: "llmLocalEngine") ?? "ollama") == "custom"
     }
     private var customAPIKey: String? {
-        let trimmed = UserDefaults.standard.string(forKey: "llmLocalAPIKey")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let trimmed = KeychainManager.shared.retrieve(for: "localLLM")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
     }
 

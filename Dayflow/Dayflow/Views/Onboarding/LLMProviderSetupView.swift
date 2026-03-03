@@ -768,9 +768,9 @@ struct LLMProviderSetupView: View {
     private func persistLocalAPIKey(_ value: String) {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
-            UserDefaults.standard.removeObject(forKey: "llmLocalAPIKey")
+            KeychainManager.shared.delete(for: "localLLM")
         } else {
-            UserDefaults.standard.set(trimmed, forKey: "llmLocalAPIKey")
+            KeychainManager.shared.store(trimmed, for: "localLLM")
         }
     }
     
@@ -822,7 +822,7 @@ class ProviderSetupState: ObservableObject {
     @Published var localEngine: LocalEngine = .lmstudio
     @Published var localBaseURL: String = LocalEngine.lmstudio.defaultBaseURL
     @Published var localModelId: String = LocalModelPreferences.defaultModelId(for: .lmstudio)
-    @Published var localAPIKey: String = UserDefaults.standard.string(forKey: "llmLocalAPIKey") ?? ""
+    @Published var localAPIKey: String = KeychainManager.shared.retrieve(for: "localLLM") ?? ""
     // CLI detection
     @Published var codexCLIStatus: CLIDetectionState = .unknown
     @Published var claudeCLIStatus: CLIDetectionState = .unknown

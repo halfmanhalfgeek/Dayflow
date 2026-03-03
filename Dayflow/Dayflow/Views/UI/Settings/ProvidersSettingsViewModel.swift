@@ -102,7 +102,7 @@ final class ProvidersSettingsViewModel: ObservableObject {
             localModelId = storedModel
         }
 
-        localAPIKey = UserDefaults.standard.string(forKey: "llmLocalAPIKey") ?? ""
+        localAPIKey = KeychainManager.shared.retrieve(for: "localLLM") ?? ""
         if let raw = UserDefaults.standard.string(forKey: "chatCLIPreferredTool") {
             preferredCLITool = CLITool(rawValue: raw)
         } else {
@@ -154,7 +154,7 @@ final class ProvidersSettingsViewModel: ObservableObject {
     func reloadLocalProviderSettings() {
         localBaseURL = UserDefaults.standard.string(forKey: "llmLocalBaseURL") ?? localBaseURL
         localModelId = UserDefaults.standard.string(forKey: "llmLocalModelId") ?? localModelId
-        localAPIKey = UserDefaults.standard.string(forKey: "llmLocalAPIKey") ?? localAPIKey
+        localAPIKey = KeychainManager.shared.retrieve(for: "localLLM") ?? localAPIKey
         let raw = UserDefaults.standard.string(forKey: "llmLocalEngine") ?? localEngine.rawValue
         localEngine = LocalEngine(rawValue: raw) ?? localEngine
         LocalModelPreferences.syncPreset(for: localEngine, modelId: localModelId)
@@ -202,9 +202,9 @@ final class ProvidersSettingsViewModel: ObservableObject {
     func persistLocalAPIKey(_ value: String) {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
-            UserDefaults.standard.removeObject(forKey: "llmLocalAPIKey")
+            KeychainManager.shared.delete(for: "localLLM")
         } else {
-            UserDefaults.standard.set(trimmed, forKey: "llmLocalAPIKey")
+            KeychainManager.shared.store(trimmed, for: "localLLM")
         }
     }
 
@@ -546,7 +546,7 @@ final class ProvidersSettingsViewModel: ObservableObject {
             let localEngineValue = UserDefaults.standard.string(forKey: "llmLocalEngine") ?? "ollama"
             let localModelValue = UserDefaults.standard.string(forKey: "llmLocalModelId") ?? "unknown"
             let localBaseValue = UserDefaults.standard.string(forKey: "llmLocalBaseURL") ?? "unknown"
-            let localAPIKeyValue = (UserDefaults.standard.string(forKey: "llmLocalAPIKey") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let localAPIKeyValue = (KeychainManager.shared.retrieve(for: "localLLM") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             props["local_engine"] = localEngineValue
             props["model_id"] = localModelValue
             props["base_url"] = localBaseValue
