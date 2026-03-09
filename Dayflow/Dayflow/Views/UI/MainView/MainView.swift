@@ -61,6 +61,7 @@ struct MainView: View {
   @State var reviewCountTask: Task<Void, Never>? = nil
   @State var reviewSummaryRefreshToken: Int = 0
   @StateObject var retryCoordinator = RetryCoordinator()
+  @StateObject var scheduleManager = RecordingScheduleManager.shared
   @State var weeklyHoursFrame: CGRect = .zero
   @State var timelineTimeLabelFrames: [CGRect] = []
   @State var weeklyHoursIntersectsCard: Bool = false

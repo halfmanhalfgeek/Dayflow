@@ -108,6 +108,9 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         }
       }
 
+    // Initialize schedule manager (ensures timer is running)
+    _ = RecordingScheduleManager.shared
+
     // Active display tracking
     tracker = ActiveDisplayTracker()
     activeDisplaySub = tracker.$activeDisplayID

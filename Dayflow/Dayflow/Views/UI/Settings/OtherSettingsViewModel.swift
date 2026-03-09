@@ -27,6 +27,50 @@ final class OtherSettingsViewModel: ObservableObject {
   @Published var outputLanguageOverride: String
   @Published var isOutputLanguageOverrideSaved: Bool = true
 
+  // Schedule settings
+  @Published var scheduleEnabled: Bool {
+    didSet {
+      guard scheduleEnabled != oldValue else { return }
+      RecordingSchedulePreferences.shared.updateSchedule(enabled: scheduleEnabled)
+      Task { @MainActor in
+        RecordingScheduleManager.shared.refresh()
+      }
+    }
+  }
+  @Published var scheduleStartTime: Date {
+    didSet {
+      guard scheduleStartTime != oldValue else { return }
+      let calendar = Calendar.current
+      let hour = calendar.component(.hour, from: scheduleStartTime)
+      let minute = calendar.component(.minute, from: scheduleStartTime)
+      RecordingSchedulePreferences.shared.updateSchedule(startHour: hour, startMinute: minute)
+      Task { @MainActor in
+        RecordingScheduleManager.shared.refresh()
+      }
+    }
+  }
+  @Published var scheduleEndTime: Date {
+    didSet {
+      guard scheduleEndTime != oldValue else { return }
+      let calendar = Calendar.current
+      let hour = calendar.component(.hour, from: scheduleEndTime)
+      let minute = calendar.component(.minute, from: scheduleEndTime)
+      RecordingSchedulePreferences.shared.updateSchedule(endHour: hour, endMinute: minute)
+      Task { @MainActor in
+        RecordingScheduleManager.shared.refresh()
+      }
+    }
+  }
+  @Published var scheduleDays: Set<Int> {
+    didSet {
+      guard scheduleDays != oldValue else { return }
+      RecordingSchedulePreferences.shared.updateSchedule(daysOfWeek: scheduleDays)
+      Task { @MainActor in
+        RecordingScheduleManager.shared.refresh()
+      }
+    }
+  }
+
   @Published var exportStartDate: Date
   @Published var exportEndDate: Date
   @Published var isExportingTimelineRange = false
@@ -44,6 +88,14 @@ final class OtherSettingsViewModel: ObservableObject {
     showTimelineAppIcons =
       UserDefaults.standard.object(forKey: "showTimelineAppIcons") as? Bool ?? true
     outputLanguageOverride = LLMOutputLanguagePreferences.override
+
+    // Initialize schedule settings
+    let schedule = RecordingSchedulePreferences.shared.schedule
+    scheduleEnabled = schedule.isEnabled
+    scheduleStartTime = schedule.startTimeAsDate()
+    scheduleEndTime = schedule.endTimeAsDate()
+    scheduleDays = schedule.daysOfWeek
+
     exportStartDate = timelineDisplayDate(from: Date())
     exportEndDate = timelineDisplayDate(from: Date())
     reprocessDayDate = timelineDisplayDate(from: Date())
