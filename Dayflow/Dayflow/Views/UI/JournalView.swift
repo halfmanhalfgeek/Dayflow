@@ -29,13 +29,8 @@ struct JournalView: View {
 
   var body: some View {
     ZStack {
-      if isUnlocked {
-        unlockedContent
-          .transition(.opacity)
-      } else {
-        lockScreen
-          .transition(.opacity.combined(with: .move(edge: .bottom)))
-      }
+      unlockedContent
+        .transition(.opacity)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     .sheet(isPresented: $showRemindersSheet) {
