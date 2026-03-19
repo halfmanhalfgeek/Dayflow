@@ -331,6 +331,12 @@ final class ChatCLIProvider {
             + combinedError)
       } catch {
         lastError = error
+        // Capture partial output from timeout errors for logging
+        if let partialOut = (error as NSError).userInfo["partialStdout"] as? String,
+          !partialOut.isEmpty
+        {
+          lastRawOutput = partialOut
+        }
         print(
           "[ChatCLI] generate_cards attempt " + String(attempt) + " failed: "
             + error.localizedDescription + " — retrying")
@@ -341,9 +347,12 @@ final class ChatCLIProvider {
 
     let finishedAt = lastRun?.finishedAt ?? Date()
     let finalError = lastError ?? CardParseError.decodeFailure(rawOutput: lastRawOutput)
+    let finalStderr =
+      lastRun?.stderr
+      ?? (lastError as NSError?)?.userInfo["partialStderr"] as? String
     logFailure(
       ctx: makeCtx(batchId: batchId, operation: "generate_cards", startedAt: callStart, attempt: 3),
-      finishedAt: finishedAt, error: finalError, stdout: lastRawOutput, stderr: lastRun?.stderr)
+      finishedAt: finishedAt, error: finalError, stdout: lastRawOutput, stderr: finalStderr)
     throw finalError
   }
 
@@ -1340,6 +1349,8 @@ final class ChatCLIProvider {
     var actualPrompt = basePrompt
     var lastError: Error?
     var lastRun: ChatCLIRunResult?
+    var lastRawOutput: String = ""
+    var lastRawStderr: String = ""
 
     let maxTranscribeAttempts = 3
     for attempt in 1...maxTranscribeAttempts {
@@ -1423,6 +1434,14 @@ final class ChatCLIProvider {
         }
       } catch {
         lastError = error
+        // Capture partial output from timeout errors for logging
+        let nsErr = error as NSError
+        if let partialOut = nsErr.userInfo["partialStdout"] as? String, !partialOut.isEmpty {
+          lastRawOutput = partialOut
+        }
+        if let partialErr = nsErr.userInfo["partialStderr"] as? String, !partialErr.isEmpty {
+          lastRawStderr = partialErr
+        }
         if attempt < maxTranscribeAttempts {
           print(
             "[ChatCLI] Screenshot transcribe attempt \(attempt) failed: \(error.localizedDescription) — retrying"
@@ -1445,11 +1464,13 @@ final class ChatCLIProvider {
           NSLocalizedDescriptionKey:
             "Screenshot transcription failed after \(maxTranscribeAttempts) attempts from \(imagePaths.count) screenshots"
         ])
+    let finalStdout = lastRun?.stdout ?? lastRawOutput
+    let finalStderr = lastRun?.stderr ?? lastRawStderr
     logFailure(
       ctx: makeCtx(
         batchId: batchId, operation: "transcribe_screenshots", startedAt: callStart,
         attempt: maxTranscribeAttempts), finishedAt: finishedAt, error: finalError,
-      stdout: lastRun?.stdout, stderr: lastRun?.stderr)
+      stdout: finalStdout, stderr: finalStderr)
     throw finalError
   }
 
@@ -1533,7 +1554,11 @@ final class ChatCLIProvider {
           prompt: prompt, model: model, reasoningEffort: "high", disableTools: false)
       }.value
     } catch {
-      logFailure(ctx: ctx, finishedAt: Date(), error: error)
+      let nsErr = error as NSError
+      let partialOut = nsErr.userInfo["partialStdout"] as? String
+      let partialErr = nsErr.userInfo["partialStderr"] as? String
+      logFailure(
+        ctx: ctx, finishedAt: Date(), error: error, stdout: partialOut, stderr: partialErr)
       throw error
     }
 
