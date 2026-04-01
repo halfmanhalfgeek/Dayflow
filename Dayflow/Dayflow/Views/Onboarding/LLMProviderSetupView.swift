@@ -664,7 +664,7 @@ struct LLMProviderSetupView: View {
             .foregroundColor(.black.opacity(0.9))
 
           Text(
-            "Google's Gemini offers a generous free tier that should allow you to run Dayflow ~15 hours a day for free - no credit card required"
+            "allows you to run Dayflow for free. All you need is a Google account - no credit card required."
           )
           .font(.custom("Nunito", size: 14))
           .foregroundColor(.black.opacity(0.6))
@@ -1721,7 +1721,7 @@ struct ChatCLITestView: View {
           success = passed
           if passed {
             resultMessage = "CLI is working!"
-          } else if cliResult.stdout.isEmpty {
+          } else if cliResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             resultMessage = "CLI returned empty response. Make sure you're signed in."
           } else {
             let preview = cliResult.stdout.prefix(100)
@@ -1805,19 +1805,16 @@ struct ChatCLITestView: View {
         cwd: safeWorkingDir
       )
     case .claude:
-      // --strict-mcp-config disables all user MCP servers
-      // -- separator ensures prompt isn't parsed as an option
-      return try runCLI(
-        "claude",
-        args: [
-          "--print",
-          "--output-format", "text",
-          "--strict-mcp-config",
-          "--",
-          prompt,
-        ],
-        cwd: safeWorkingDir
+      // Use the shared runner so the setup test benefits from the same
+      // temporary Claude stream-json workaround as production calls.
+      let runner = ChatCLIProcessRunner()
+      let run = try runner.run(
+        tool: .claude,
+        prompt: prompt,
+        workingDirectory: safeWorkingDir,
+        disableTools: true
       )
+      return CLIResult(stdout: run.stdout, stderr: run.stderr, exitCode: run.exitCode)
     }
   }
 
