@@ -59,50 +59,53 @@ final class RecordingScheduleManager: ObservableObject {
     
     private func evaluateSchedule() {
         let schedule = RecordingSchedulePreferences.shared.schedule
-        
+        let wasInWindow = isInScheduledWindow
+
         guard schedule.isEnabled else {
             isInScheduledWindow = false
-            return
+            return  // Schedule disabled — nothing to enforce
         }
-        
+
+        // Compute whether the current time falls within the scheduled window
         let now = Date()
         let calendar = Calendar.current
-        
-        // Check if today is in scheduled days
         let weekday = calendar.component(.weekday, from: now)
-        guard schedule.daysOfWeek.contains(weekday) else {
+
+        if !schedule.daysOfWeek.contains(weekday) {
             isInScheduledWindow = false
-            return
-        }
-        
-        // Get current time components
-        let currentHour = calendar.component(.hour, from: now)
-        let currentMinute = calendar.component(.minute, from: now)
-        let currentTimeInMinutes = currentHour * 60 + currentMinute
-        
-        // Get scheduled time range
-        let startTimeInMinutes = schedule.startHour * 60 + schedule.startMinute
-        let endTimeInMinutes = schedule.endHour * 60 + schedule.endMinute
-        
-        // Check if current time is within the scheduled window
-        let wasInWindow = isInScheduledWindow
-        
-        if endTimeInMinutes > startTimeInMinutes {
-            // Normal case: e.g., 9:00 AM to 5:00 PM
-            isInScheduledWindow = currentTimeInMinutes >= startTimeInMinutes && currentTimeInMinutes < endTimeInMinutes
         } else {
-            // Spans midnight: e.g., 11:00 PM to 2:00 AM
-            isInScheduledWindow = currentTimeInMinutes >= startTimeInMinutes || currentTimeInMinutes < endTimeInMinutes
+            let currentHour = calendar.component(.hour, from: now)
+            let currentMinute = calendar.component(.minute, from: now)
+            let currentTimeInMinutes = currentHour * 60 + currentMinute
+
+            let startTimeInMinutes = schedule.startHour * 60 + schedule.startMinute
+            let endTimeInMinutes = schedule.endHour * 60 + schedule.endMinute
+
+            if endTimeInMinutes > startTimeInMinutes {
+                // Normal case: e.g., 9:00 AM to 6:00 PM
+                isInScheduledWindow = currentTimeInMinutes >= startTimeInMinutes && currentTimeInMinutes < endTimeInMinutes
+            } else {
+                // Spans midnight: e.g., 11:00 PM to 2:00 AM
+                isInScheduledWindow = currentTimeInMinutes >= startTimeInMinutes || currentTimeInMinutes < endTimeInMinutes
+            }
         }
-        
-        // If window state changed, update recording state
+
+        // Always enforce schedule state so that enabling the schedule
+        // mid-session or launching outside the window immediately corrects
+        // the recording state.
+        enforceSchedule()
+
         if wasInWindow != isInScheduledWindow {
-            applyScheduleToRecording()
+            let action = isInScheduledWindow ? "entered" : "exited"
+            AnalyticsService.shared.capture("recording_schedule_window_\(action)", [
+                "in_window": isInScheduledWindow
+            ])
         }
     }
     
-    /// Apply schedule state to AppState.isRecording
-    private func applyScheduleToRecording() {
+    /// Apply schedule state to AppState.isRecording.
+    /// Called after every evaluation and also externally after pause state changes.
+    func enforceSchedule() {
         guard scheduleEnabled else { return }
         
         // Don't override manual pause

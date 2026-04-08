@@ -10,6 +10,7 @@ import SwiftUI
 struct PausePillView: View {
   @ObservedObject private var appState = AppState.shared
   @ObservedObject private var pauseManager = PauseManager.shared
+  @ObservedObject private var scheduleManager = RecordingScheduleManager.shared
 
   private enum Phase { case idle, menu, paused }
 
@@ -85,6 +86,10 @@ struct PausePillView: View {
 
   private var showsPrimaryContent: Bool {
     phase != .paused || pauseOpacity > 0.001
+  }
+
+  private var isScheduled: Bool {
+    scheduleManager.scheduleEnabled
   }
 
   private var showsResumeContent: Bool {
@@ -186,7 +191,11 @@ struct PausePillView: View {
 
   private var primaryContent: some View {
     HStack(spacing: 4) {
-      PillPauseIcon()
+      if isScheduled {
+        PillScheduleClockIcon(isRecording: appState.isRecording)
+      } else {
+        PillPauseIcon()
+      }
       Text("Pause")
         .font(pillLabelFont)
         .foregroundColor(Color(hex: "786655"))
@@ -281,10 +290,15 @@ struct PausePillView: View {
   private func handlePillTap() {
     switch phase {
     case .idle:
-      if controlMode == .stopped {
-        startRecordingFromResumePill()
-      } else {
+      if isScheduled {
+        // Schedule controls recording; only allow pausing when actively recording
+        if appState.isRecording {
+          openMenu()
+        }
+      } else if controlMode != .stopped {
         openMenu()
+      } else {
+        startRecordingFromResumePill()
       }
     case .menu: closeMenu()
     case .paused:
@@ -292,7 +306,13 @@ struct PausePillView: View {
       case .pausedTimed, .pausedIndefinite:
         resumeFromPause()
       case .stopped:
-        startRecordingFromResumePill()
+        if isScheduled {
+          // Schedule controls recording; just return to idle
+          phase = .idle
+          animatePausedToIdle()
+        } else {
+          startRecordingFromResumePill()
+        }
       case .active:
         openMenu()
       }
@@ -507,6 +527,8 @@ struct PausePillView: View {
         scheduleStatusAutoHide(after: 3)
       }
     case .stopped:
+      // When schedule is active, stay in idle — the schedule controls recording
+      if isScheduled { break }
       setResumePillState(showStatusText: false)
     case .active:
       break
@@ -518,7 +540,13 @@ struct PausePillView: View {
       transitionToResumePill(showStatusText: true)
     } else if !isPaused, phase == .paused {
       if controlMode == .stopped {
-        setResumePillState(showStatusText: false)
+        if isScheduled {
+          // Schedule controls recording; return to idle (not resume pill)
+          phase = .idle
+          animatePausedToIdle()
+        } else {
+          setResumePillState(showStatusText: false)
+        }
       } else {
         phase = .idle
         animatePausedToIdle()
@@ -534,6 +562,10 @@ struct PausePillView: View {
       animatePausedToIdle()
       return
     }
+
+    // When schedule is active, don't show resume pill on recording stop —
+    // the schedule manages start/stop automatically
+    if isScheduled { return }
 
     guard phase != .paused else { return }
     transitionToResumePill(showStatusText: false)
@@ -599,6 +631,17 @@ private struct PillPauseIcon: View {
       ctx.fill(Path(CGRect(x: 7, y: 2.5, width: 2, height: 7)), with: .color(color))
     }
     .frame(width: 12, height: 12)
+  }
+}
+
+private struct PillScheduleClockIcon: View {
+  let isRecording: Bool
+
+  var body: some View {
+    Image(systemName: "clock.fill")
+      .font(.system(size: 11, weight: .medium))
+      .foregroundColor(isRecording ? Color(hex: "E8854A") : Color(hex: "786655"))
+      .frame(width: 12, height: 12)
   }
 }
 

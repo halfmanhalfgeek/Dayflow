@@ -143,8 +143,12 @@ final class PauseManager: ObservableObject {
 
     clearPauseState()
 
-    // Start recording
-    AppState.shared.setRecording(true, analyticsReason: source.rawValue)
+    // When a schedule is active, defer to it for recording state.
+    // shouldBeRecording() returns nil when schedule is disabled (manual control).
+    let scheduleSays = RecordingScheduleManager.shared.shouldBeRecording()
+    if scheduleSays ?? true {
+      AppState.shared.setRecording(true, analyticsReason: source.rawValue)
+    }
 
     // Send analytics
     AnalyticsService.shared.capture(
@@ -153,6 +157,7 @@ final class PauseManager: ObservableObject {
         "source": source.rawValue,
         "was_timed": wasTimed,
         "original_pause_type": pauseType,
+        "schedule_allowed": scheduleSays ?? true,
       ])
   }
 
