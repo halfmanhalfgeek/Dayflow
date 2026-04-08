@@ -30,7 +30,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
   private var powerObserver: NSObjectProtocol?
   private var deepLinkRouter: AppDeepLinkRouter?
   private var pendingDeepLinkURLs: [URL] = []
-  private var pendingRecordingAnalyticsReason: String?
   private var heartbeatTimer: Timer?
   private var appLaunchDate: Date?
   private var foregroundStartTime: Date?
@@ -75,7 +74,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     UserDefaults.standard.set(build, forKey: "lastRunBuild")
     statusBar = StatusBarController()
     LaunchAtLoginManager.shared.bootstrapDefaultPreference()
-    deepLinkRouter = AppDeepLinkRouter(delegate: self)
+    deepLinkRouter = AppDeepLinkRouter()
 
     // Check if we've passed the screen recording permission step
     let onboardingStep = OnboardingStepMigration.migrateIfNeeded()
@@ -86,9 +85,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     AppState.shared.isRecording = false
     recorder = ScreenRecorder(autoStart: true)
 
-    // Only attempt to start recording if we're past the screen step or fully onboarded
-    // Steps: 0=welcome, 1=howItWorks, 2=llmSelection, 3=llmSetup, 4=categories, 5=screen, 6=completion
-    if didOnboard || onboardingStep > 5 {
+    // Only attempt to start recording if we're past the screen step or fully onboarded.
+    if didOnboard || OnboardingStep.hasPassedScreenRecordingStep(rawValue: onboardingStep) {
       // Onboarding complete - enable persistence and restore user preference
       AppState.shared.enablePersistence()
 
@@ -101,7 +99,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
           // Permission granted - restore saved preference or default to ON
           await MainActor.run {
             let savedPref = AppState.shared.getSavedPreference()
-            AppState.shared.isRecording = savedPref ?? true
+            AppState.shared.setRecording(savedPref ?? true, analyticsReason: "auto")
           }
           let finalState = await MainActor.run { AppState.shared.isRecording }
           AnalyticsService.shared.capture(
@@ -110,7 +108,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
           // No permission or error - don't start recording
           // User will need to grant permission in onboarding
           await MainActor.run {
-            AppState.shared.isRecording = false
+            AppState.shared.setRecording(
+              false,
+              analyticsReason: "auto",
+              persistPreference: false
+            )
           }
           print("Screen recording permission not granted, skipping auto-start")
         }
@@ -138,11 +140,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Observe recording state
     analyticsSub = AppState.shared.$isRecording
       .removeDuplicates()
-      .sink { [weak self] enabled in
-        guard let self else { return }
-        let reason = self.pendingRecordingAnalyticsReason ?? "user"
+      .sink { enabled in
+        let reason = AppState.shared.consumePendingRecordingAnalyticsReason() ?? "unknown"
         guard reason != "auto" else { return }
-        self.pendingRecordingAnalyticsReason = nil
         AnalyticsService.shared.capture(
           "recording_toggled", ["enabled": enabled, "reason": reason])
         AnalyticsService.shared.setPersonProperties(["recording_enabled": enabled])
@@ -279,18 +279,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let didOnboard = UserDefaults.standard.bool(forKey: "didOnboard")
     if !didOnboard {
       let stepIdx = OnboardingStepMigration.migrateIfNeeded()
-      let stepName: String = {
-        switch stepIdx {
-        case 0: return "welcome"
-        case 1: return "how_it_works"
-        case 2: return "llm_selection"
-        case 3: return "llm_setup"
-        case 4: return "categories"
-        case 5: return "screen_recording"
-        case 6: return "completion"
-        default: return "unknown"
-        }
-      }()
+      let stepName = OnboardingStep(rawValue: stepIdx)?.analyticsName ?? "unknown"
       AnalyticsService.shared.capture("onboarding_abandoned", ["last_step": stepName])
     }
     AnalyticsService.shared.capture("app_terminated")
@@ -345,11 +334,5 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     } else {
       ProcessCPUMonitor.shared.stop()
     }
-  }
-}
-
-extension AppDelegate: AppDeepLinkRouterDelegate {
-  func prepareForRecordingToggle(reason: String) {
-    pendingRecordingAnalyticsReason = reason
   }
 }
