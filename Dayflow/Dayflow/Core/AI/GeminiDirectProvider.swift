@@ -2684,8 +2684,9 @@ final class GeminiDirectProvider {
       contents: contents,
       includeThinkingConfig: includeThinkingConfig
     )
-    var request = URLRequest(url: URL(string: dashboardStreamEndpoint + "?alt=sse&key=\(apiKey)")!)
+    var request = URLRequest(url: URL(string: dashboardStreamEndpoint + "?alt=sse")!)
     request.httpMethod = "POST"
+    request.setValue(apiKey, forHTTPHeaderField: "X-Goog-Api-Key")
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.timeoutInterval = 180
     request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
@@ -2773,8 +2774,9 @@ final class GeminiDirectProvider {
       contents: contents,
       includeThinkingConfig: includeThinkingConfig
     )
-    var request = URLRequest(url: URL(string: dashboardGenerateEndpoint + "?key=\(apiKey)")!)
+    var request = URLRequest(url: URL(string: dashboardGenerateEndpoint)!)
     request.httpMethod = "POST"
+    request.setValue(apiKey, forHTTPHeaderField: "X-Goog-Api-Key")
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.timeoutInterval = 180
     request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
