@@ -1,3 +1,4 @@
+import OSLog
 import SwiftUI
 
 // MARK: - Cached DateFormatters (creating DateFormatters is expensive due to ICU initialization)
@@ -20,6 +21,55 @@ let cachedDayStringFormatter: DateFormatter = {
   formatter.dateFormat = "yyyy-MM-dd"
   return formatter
 }()
+
+let timelinePerfLogger = Logger(
+  subsystem: Bundle.main.bundleIdentifier ?? "teleportlabs.com.Dayflow",
+  category: "TimelinePerf"
+)
+
+#if DEBUG
+  private let timelinePerfLogFileURL = URL(fileURLWithPath: "/tmp/dayflow-timeline-perf.log")
+  private let timelinePerfLogQueue = DispatchQueue(
+    label: "teleportlabs.com.Dayflow.timelinePerfLog"
+  )
+  private let timelinePerfTimestampFormatter: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+  }()
+#endif
+
+func timelinePerfLog(_ message: String) {
+  timelinePerfLogger.notice("\(message, privacy: .public)")
+  #if DEBUG
+    let line =
+      "[\(timelinePerfTimestampFormatter.string(from: Date())) pid=\(ProcessInfo.processInfo.processIdentifier)] \(message)\n"
+
+    timelinePerfLogQueue.async {
+      let fileManager = FileManager.default
+      if !fileManager.fileExists(atPath: timelinePerfLogFileURL.path) {
+        fileManager.createFile(atPath: timelinePerfLogFileURL.path, contents: nil)
+      }
+
+      guard let data = line.data(using: .utf8),
+        let handle = try? FileHandle(forWritingTo: timelinePerfLogFileURL)
+      else {
+        return
+      }
+
+      defer {
+        try? handle.close()
+      }
+
+      do {
+        try handle.seekToEnd()
+        try handle.write(contentsOf: data)
+      } catch {
+        return
+      }
+    }
+  #endif
+}
 
 struct WeeklyHoursFramePreferenceKey: PreferenceKey {
   static var defaultValue: CGRect = .zero
@@ -50,6 +100,94 @@ extension View {
 }
 
 extension MainView {
+  var weekInspectorWidth: CGFloat { 340 }
+
+  var timelineWeekRange: TimelineWeekRange {
+    cachedTimelineWeekRange
+  }
+
+  var isWeekTimelineInspectorVisible: Bool {
+    timelineMode == .week && selectedActivity != nil
+  }
+
+  var timelineInspectorWidth: CGFloat {
+    switch timelineMode {
+    case .day:
+      return 358
+    case .week:
+      return isWeekTimelineInspectorVisible ? weekInspectorWidth : 0
+    }
+  }
+
+  var timelineInspectorDividerWidth: CGFloat {
+    switch timelineMode {
+    case .day:
+      return 1
+    case .week:
+      return isWeekTimelineInspectorVisible ? 1 : 0
+    }
+  }
+
+  var shellAnimation: Animation {
+    return .spring(duration: 0.28, bounce: 0)
+  }
+
+  var timelineModeSwitchAnimation: Animation {
+    .spring(response: 0.26, dampingFraction: 0.84)
+  }
+
+  var timelineModeContentAnimation: Animation {
+    if reduceMotion {
+      return .linear(duration: 0.08)
+    }
+    // ease-out-quart (cubic-bezier(0.165, 0.84, 0.44, 1)): fast start, slow
+    // settle. Per Emil Kowalski's framework, enter/exit transitions should
+    // use ease-out so the new view "jumps toward its destination and lands"
+    // rather than starting sluggish (which ease-in-out does).
+    return .timingCurve(0.165, 0.84, 0.44, 1, duration: 0.24)
+  }
+
+  var inspectorContentAnimation: Animation {
+    return .easeOut(duration: 0.18)
+  }
+
+  var timelineTitleText: String {
+    switch timelineMode {
+    case .day:
+      return formatDateForDisplay(selectedDate)
+    case .week:
+      return timelineWeekRange.title
+    }
+  }
+
+  var canNavigateTimelineForward: Bool {
+    switch timelineMode {
+    case .day:
+      return canNavigateForward(from: selectedDate)
+    case .week:
+      return timelineWeekRange.canNavigateForward
+    }
+  }
+
+  var shouldShowTodayButton: Bool {
+    switch timelineMode {
+    case .day:
+      return !timelineIsToday(selectedDate)
+    case .week:
+      return !timelineWeekRange.containsToday
+    }
+  }
+
+  var timelineTrackedMinutesParts: (bold: String, rest: String) {
+    let totalHours = Int(weeklyTrackedMinutes / 60)
+    switch timelineMode {
+    case .day:
+      return ("\(totalHours) hours", " tracked this week")
+    case .week:
+      return ("\(totalHours) hours", " of activities tracked this week")
+    }
+  }
+
   func formatDateForDisplay(_ date: Date) -> String {
     let now = Date()
     let calendar = Calendar.current
@@ -68,8 +206,103 @@ extension MainView {
     selectedDate = normalizedTimelineDate(date)
   }
 
+  func previousTimelineDate() -> Date {
+    switch timelineMode {
+    case .day:
+      return Calendar.current.date(byAdding: .day, value: -1, to: selectedDate) ?? selectedDate
+    case .week:
+      return Calendar.current.date(byAdding: .day, value: -7, to: selectedDate) ?? selectedDate
+    }
+  }
+
+  func nextTimelineDate() -> Date {
+    switch timelineMode {
+    case .day:
+      return Calendar.current.date(byAdding: .day, value: 1, to: selectedDate) ?? selectedDate
+    case .week:
+      return Calendar.current.date(byAdding: .day, value: 7, to: selectedDate) ?? selectedDate
+    }
+  }
+
   func dayString(_ date: Date) -> String {
     return cachedDayStringFormatter.string(from: date)
+  }
+
+  func setTimelineMode(_ mode: TimelineMode) {
+    guard timelineMode != mode else { return }
+
+    withAnimation(timelineModeContentAnimation) {
+      timelineMode = mode
+      selectedActivity = nil
+    }
+
+    loadWeeklyTrackedMinutes()
+  }
+
+  func selectTimelineActivity(_ activity: TimelineActivity) {
+    switch timelineMode {
+    case .day:
+      selectedActivity = activity
+    case .week:
+      if isWeekTimelineInspectorVisible {
+        guard selectedActivity?.id != activity.id else { return }
+        withAnimation(inspectorContentAnimation) {
+          selectedActivity = activity
+        }
+      } else {
+        withAnimation(shellAnimation) {
+          selectedActivity = activity
+        }
+      }
+    }
+  }
+
+  func clearTimelineSelection(animated: Bool = true) {
+    guard selectedActivity != nil else { return }
+
+    guard animated else {
+      selectedActivity = nil
+      return
+    }
+
+    let animation = timelineMode == .week ? shellAnimation : inspectorContentAnimation
+    withAnimation(animation) {
+      selectedActivity = nil
+    }
+  }
+
+  func navigateTimeline(to date: Date, method: String) {
+    let navStart = CFAbsoluteTimeGetCurrent()
+    let from = selectedDate
+    let fromDay = dayString(from)
+    let toDay = dayString(date)
+    let sameWeek = TimelineWeekRange.containing(from) == TimelineWeekRange.containing(date)
+
+    timelinePerfLog(
+      "navigateTimeline.begin method=\(method) mode=\(timelineMode.rawValue) from=\(fromDay) to=\(toDay) sameWeek=\(sameWeek)"
+    )
+
+    defer {
+      let durationMs = Int((CFAbsoluteTimeGetCurrent() - navStart) * 1000)
+      timelinePerfLog(
+        "navigateTimeline.end method=\(method) mode=\(timelineMode.rawValue) from=\(fromDay) to=\(toDay) duration_ms=\(durationMs)"
+      )
+    }
+
+    previousDate = selectedDate
+    clearTimelineSelection(animated: false)
+    setSelectedDate(date)
+    lastDateNavMethod = method
+
+    AnalyticsService.shared.capture(
+      "date_navigation",
+      [
+        "method": method,
+        "timeline_mode": timelineMode.rawValue,
+        "from_day": dayString(from),
+        "to_day": dayString(date),
+      ]
+    )
   }
 }
 

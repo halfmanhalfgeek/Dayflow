@@ -15,9 +15,18 @@ import SwiftUI
 struct MainView: View {
   @EnvironmentObject var appState: AppState
   @EnvironmentObject var categoryStore: CategoryStore
+  @Environment(\.accessibilityReduceMotion) var reduceMotion
   @State var selectedIcon: SidebarIcon = .timeline
   @State var selectedDate = timelineDisplayDate(from: Date())
+  @State var cachedTimelineWeekRange: TimelineWeekRange = TimelineWeekRange.containing(
+    timelineDisplayDate(from: Date()))
+  @State var timelineMode: TimelineMode = .day
   @State var showDatePicker = false
+  // Arrowless calendar card anchored to the timeline header's calendar pill
+  // (distinct from `showDatePicker`, which drives a modal sheet used only by
+  // the daily-view date pill).
+  @State var showTimelineCalendarPopover = false
+  @State var timelineCalendarButtonFrame: CGRect = .zero
   @State var selectedActivity: TimelineActivity? = nil
   @State var scrollToNowTick: Int = 0
   @State var hasAnyActivities: Bool = true
@@ -35,6 +44,7 @@ struct MainView: View {
 
   // Hero animation for video expansion (Emil Kowalski: shared element transitions)
   @Namespace var videoHeroNamespace
+  @Namespace var timelineModeSwitchNamespace
   @StateObject var videoExpansionState = VideoExpansionState()
 
   // Track if we've performed the initial scroll to current time
@@ -55,8 +65,7 @@ struct MainView: View {
   @State var copyTimelineState: TimelineCopyState = .idle
   @State var copyTimelineTask: Task<Void, Never>? = nil
   @State var deleteTimelineTask: Task<Void, Never>? = nil
-  @State var headerWidth: CGFloat = 1000
-  @State var shouldHideTimelineDateSection: Bool = false
+  @State var timelineHeaderTrailingWidth: CGFloat = 120
   @State var weeklyTrackedMinutes: Double = 0
   @State var cardsToReviewCount: Int = 0
   @State var showTimelineReview = false
@@ -74,13 +83,6 @@ struct MainView: View {
   var rateSummaryFooterInset: CGFloat {
     selectedActivity == nil ? 0 : rateSummaryFooterHeight
   }
-
-  static let maxDateTitleWidth: CGFloat = {
-    let referenceText = "Today, Sep 30"
-    let font = NSFont(name: "InstrumentSerif-Regular", size: 36) ?? NSFont.systemFont(ofSize: 36)
-    let width = referenceText.size(withAttributes: [.font: font]).width
-    return ceil(width) + 9  // small buffer so arrows never nudge
-  }()
   let iso8601Formatter: ISO8601DateFormatter = {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

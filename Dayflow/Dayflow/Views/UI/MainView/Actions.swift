@@ -77,34 +77,56 @@ extension MainView {
     }
   }
 
-  func loadWeeklyTrackedMinutes() {
+  func loadWeeklyTrackedMinutes(trigger: String = "unspecified") {
+    let weekRange = timelineWeekRange
+    let weekStartDay = dayString(weekRange.weekStart)
+    timelinePerfLog("weeklyTrackedMinutes.schedule trigger=\(trigger) week=\(weekStartDay)")
+
     Task.detached(priority: .userInitiated) {
-      let minutes = StorageManager.shared.fetchTotalMinutesTrackedForWeek(containing: Date())
+      let fetchStart = CFAbsoluteTimeGetCurrent()
+      let minutes = StorageManager.shared.fetchTotalMinutesTracked(
+        from: weekRange.weekStart,
+        to: weekRange.weekEnd
+      )
+      let fetchMs = Int((CFAbsoluteTimeGetCurrent() - fetchStart) * 1000)
+
       await MainActor.run {
+        let commitStart = CFAbsoluteTimeGetCurrent()
         weeklyTrackedMinutes = minutes
+        let commitMs = Int((CFAbsoluteTimeGetCurrent() - commitStart) * 1000)
+        timelinePerfLog(
+          "weeklyTrackedMinutes.complete trigger=\(trigger) week=\(weekStartDay) minutes=\(Int(minutes.rounded())) fetch_ms=\(fetchMs) commit_ms=\(commitMs)"
+        )
       }
     }
   }
 
-  func updateCardsToReviewCount() {
+  func updateCardsToReviewCount(trigger: String = "unspecified") {
     reviewCountTask?.cancel()
     let timelineDate = timelineDisplayDate(from: selectedDate, now: Date())
     let dayString = DateFormatter.yyyyMMdd.string(from: timelineDate)
 
+    timelinePerfLog("reviewCount.schedule trigger=\(trigger) day=\(dayString)")
+
     reviewCountTask = Task.detached(priority: .userInitiated) {
+      let fetchStart = CFAbsoluteTimeGetCurrent()
       let count = StorageManager.shared.fetchUnreviewedTimelineCardCount(
         forDay: dayString, coverageThreshold: 0.8)
+      let fetchMs = Int((CFAbsoluteTimeGetCurrent() - fetchStart) * 1000)
+
       await MainActor.run {
+        let commitStart = CFAbsoluteTimeGetCurrent()
         cardsToReviewCount = count
+        let commitMs = Int((CFAbsoluteTimeGetCurrent() - commitStart) * 1000)
+        timelinePerfLog(
+          "reviewCount.complete trigger=\(trigger) day=\(dayString) count=\(count) fetch_ms=\(fetchMs) commit_ms=\(commitMs)"
+        )
       }
     }
   }
 
   func copyTimelineToClipboard() {
     guard copyTimelineState != .copying else { return }
-
-    let timelineDate = timelineDisplayDate(from: selectedDate, now: Date())
-    let day = dayString(timelineDate)
 
     copyTimelineTask?.cancel()
 
@@ -124,9 +146,41 @@ extension MainView {
         }
       }
 
-      let cards = StorageManager.shared.fetchTimelineCards(forDay: day)
-      let clipboardText = TimelineClipboardFormatter.makeClipboardText(
-        for: timelineDate, cards: cards)
+      let clipboardText: String
+      let analyticsProps: [String: Any]
+
+      switch timelineMode {
+      case .day:
+        let timelineDate = timelineDisplayDate(from: selectedDate, now: Date())
+        let day = dayString(timelineDate)
+        let cards = StorageManager.shared.fetchTimelineCards(forDay: day)
+        clipboardText = TimelineClipboardFormatter.makeClipboardText(
+          for: timelineDate,
+          cards: cards
+        )
+        analyticsProps = [
+          "timeline_mode": timelineMode.rawValue,
+          "timeline_day": day,
+          "activity_count": cards.count,
+        ]
+
+      case .week:
+        let weekRange = timelineWeekRange
+        let cards = StorageManager.shared.fetchTimelineCardsByTimeRange(
+          from: weekRange.weekStart,
+          to: weekRange.weekEnd
+        )
+        clipboardText = TimelineClipboardFormatter.makeClipboardText(
+          for: weekRange,
+          cards: cards
+        )
+        analyticsProps = [
+          "timeline_mode": timelineMode.rawValue,
+          "week_start": dayString(weekRange.weekStart),
+          "week_end": dayString(weekRange.weekEnd),
+          "activity_count": cards.count,
+        ]
+      }
 
       guard !Task.isCancelled else { return }
 
@@ -140,12 +194,7 @@ extension MainView {
         }
       }
 
-      AnalyticsService.shared.capture(
-        "timeline_copied",
-        [
-          "timeline_day": day,
-          "activity_count": cards.count,
-        ])
+      AnalyticsService.shared.capture("timeline_copied", analyticsProps)
 
       try? await Task.sleep(nanoseconds: 2_000_000_000)
       guard !Task.isCancelled else { return }
@@ -198,7 +247,7 @@ extension MainView {
 
       await MainActor.run {
         if selectedActivity?.id == selectedActivityId {
-          selectedActivity = nil
+          clearTimelineSelection()
         }
         refreshActivitiesTrigger &+= 1
       }

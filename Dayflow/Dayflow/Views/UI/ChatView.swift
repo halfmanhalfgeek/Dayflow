@@ -1312,7 +1312,7 @@ private struct MessageBubble: View {
         ForEach(blocks) { block in
           switch block {
           case .text(_, let content):
-            renderMarkdownLines(content)
+            ChatMarkdownContentView(content: content)
           case .chart(let spec):
             ChatChartBlockView(spec: spec)
           }
@@ -1326,6 +1326,11 @@ private struct MessageBubble: View {
         RoundedRectangle(cornerRadius: 16, style: .continuous)
           .stroke(Color(hex: "E8E8E8"), lineWidth: 1)
       )
+      .contextMenu {
+        Button("Copy") {
+          copyAssistantMessageToPasteboard()
+        }
+      }
       .environment(
         \.openURL,
         OpenURLAction { url in
@@ -1333,33 +1338,6 @@ private struct MessageBubble: View {
         })
       Spacer(minLength: 60)
     }
-  }
-
-  private func renderMarkdownLines(_ content: String) -> some View {
-    let normalized = normalizeMarkdownForDisplay(content)
-    let options = AttributedString.MarkdownParsingOptions(
-      interpretedSyntax: .inlineOnlyPreservingWhitespace
-    )
-
-    let displayText: Text
-    if let parsed = try? AttributedString(markdown: normalized, options: options) {
-      displayText = Text(parsed)
-    } else {
-      displayText = Text(normalized)
-    }
-
-    return
-      displayText
-      .font(.custom("Nunito", size: 13).weight(.medium))
-      .foregroundColor(Color(hex: "333333"))
-      .textSelection(.enabled)
-      .fixedSize(horizontal: false, vertical: true)
-  }
-
-  private func normalizeMarkdownForDisplay(_ content: String) -> String {
-    content
-      .replacingOccurrences(of: "\r\n", with: "\n")
-      .replacingOccurrences(of: "\r", with: "\n")
   }
 
   private func handleAssistantLinkTap(_ url: URL) -> OpenURLAction.Result {
@@ -1407,6 +1385,12 @@ private struct MessageBubble: View {
     }
 
     return normalized
+  }
+
+  private func copyAssistantMessageToPasteboard() {
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+    pasteboard.setString(message.content, forType: .string)
   }
 }
 
@@ -2229,7 +2213,7 @@ private struct WorkStatusCard: View {
             .font(.custom("Nunito", size: 11).weight(.semibold))
             .foregroundColor(Color(hex: "8B5E3C"))
           }
-          .buttonStyle(.plain)
+          .buttonStyle(DayflowPressScaleButtonStyle(pressedScale: 0.97))
           .pointingHandCursor()
         }
 
@@ -2739,9 +2723,12 @@ private struct PressScaleButtonStyle: ButtonStyle {
 
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
-      .scaleEffect(configuration.isPressed && isEnabled ? 0.97 : 1.0)
-      .brightness(configuration.isPressed && isEnabled ? -0.02 : 0)
-      .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
+      .dayflowPressScale(
+        configuration.isPressed,
+        enabled: isEnabled,
+        pressedScale: 0.97,
+        animation: .easeOut(duration: 0.15)
+      )
       .pointingHandCursor(enabled: isEnabled)
   }
 }
@@ -2751,8 +2738,12 @@ private struct BetaButtonStyle: ButtonStyle {
 
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
-      .scaleEffect(configuration.isPressed && isEnabled ? 0.97 : 1.0)
-      .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
+      .dayflowPressScale(
+        configuration.isPressed,
+        enabled: isEnabled,
+        pressedScale: 0.97,
+        animation: .easeOut(duration: 0.15)
+      )
       .pointingHandCursor(enabled: isEnabled)
   }
 }
