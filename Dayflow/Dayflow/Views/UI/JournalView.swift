@@ -1,6 +1,5 @@
 import AVFoundation
 import AVKit
-import CryptoKit
 import SwiftUI
 
 // MARK: - Journal Coordinator
@@ -14,18 +13,9 @@ final class JournalCoordinator: ObservableObject {
 
 struct JournalView: View {
   // MARK: - Storage & State
-  @AppStorage("isJournalUnlocked") private var isUnlocked: Bool = false
   @AppStorage("hasCompletedJournalOnboarding") private var hasCompletedOnboarding: Bool = false
   @EnvironmentObject private var coordinator: JournalCoordinator
-  @State private var accessCode: String = ""
-  @State private var attempts: Int = 0
   @State private var showRemindersSheet: Bool = false
-
-  // SHA256 hashed—nice try! But you're already in the source code...
-  // so yes you can delete this function and build from source if you so desire.
-  private let requiredCodeHash = "909ca0096d519dcf94aba6069fa664842bdf9de264725a6c543c4926abe6bdfa"
-  private let betaNoticeCopy =
-    "We're slowly letting people into the beta as we iterate and improve the experience. If you choose to participate in the beta, you acknowledge that you may encounter bugs and agree to provide feedback."
 
   var body: some View {
     ZStack {
@@ -52,127 +42,6 @@ struct JournalView: View {
     }
   }
 
-  // MARK: - Lock Screen View
-  var lockScreen: some View {
-    VStack(spacing: 24) {
-      Spacer()
-
-      // Header: "Dayflow Journal" with BETA badge
-      HStack(alignment: .top, spacing: 4) {
-        Text("Dayflow Journal")
-          .font(.custom("InstrumentSerif-Italic", size: 38))
-          .foregroundColor(Color(red: 0.35, green: 0.22, blue: 0.12))
-
-        // BETA badge
-        Text("BETA")
-          .font(.custom("Nunito-Bold", size: 11))
-          .foregroundColor(.white)
-          .padding(.horizontal, 8)
-          .padding(.vertical, 4)
-          .background(
-            RoundedRectangle(cornerRadius: 6)
-              .fill(Color(red: 0.98, green: 0.55, blue: 0.20))
-          )
-          .rotationEffect(.degrees(-12))
-          .offset(x: -4, y: -4)
-      }
-
-      // Subtitle
-      Text(betaNoticeCopy)
-        .font(.custom("Nunito-Regular", size: 15))
-        .foregroundColor(Color(red: 0.35, green: 0.22, blue: 0.12).opacity(0.8))
-        .multilineTextAlignment(.center)
-        .frame(maxWidth: 480)
-        .padding(.horizontal, 24)
-
-      Spacer().frame(height: 20)
-
-      // Access code card
-      accessCodeCard
-        .modifier(Shake(animatableData: CGFloat(attempts)))
-
-      Spacer()
-    }
-    .padding()
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-    .background(
-      GeometryReader { geo in
-        Image("JournalPreview")
-          .resizable()
-          .scaledToFill()
-          .frame(width: geo.size.width, height: geo.size.height)
-          .clipped()
-          .allowsHitTesting(false)
-      }
-    )
-  }
-
-  // MARK: - Access Code Card
-  // JournalLock is the entire card image (gradient bg + lock icon baked in)
-  private var accessCodeCard: some View {
-    ZStack(alignment: .bottom) {
-      // Card background image (contains gradient + lock icon)
-      Image("JournalLock")
-        .resizable()
-        .aspectRatio(contentMode: .fit)
-
-      // Overlay content: title, text field, button (anchored to bottom)
-      VStack(spacing: 16) {
-        // Title
-        Text("Enter access code")
-          .font(.custom("Nunito-SemiBold", size: 20))
-          .foregroundColor(Color(red: 0.85, green: 0.45, blue: 0.25))
-
-        // Text field
-        TextField("", text: $accessCode)
-          .textFieldStyle(.plain)
-          .font(.custom("Nunito-Medium", size: 15))
-          .foregroundColor(Color(red: 0.25, green: 0.15, blue: 0.10))
-          .multilineTextAlignment(.center)
-          .padding(.horizontal, 14)
-          .padding(.vertical, 12)
-          .background(
-            RoundedRectangle(cornerRadius: 8)
-              .fill(Color.white)
-          )
-          .padding(.horizontal, 80)
-          .submitLabel(.go)
-          .onSubmit { validateCode() }
-
-        // Submit button
-        Button(action: validateCode) {
-          Text("Get early access")
-            .font(.custom("Nunito-SemiBold", size: 15))
-            .foregroundColor(Color(red: 0.35, green: 0.22, blue: 0.12))
-            .padding(.horizontal, 28)
-            .padding(.vertical, 10)
-            .background(
-              Capsule()
-                .fill(
-                  LinearGradient(
-                    colors: [
-                      Color(red: 1.0, green: 0.92, blue: 0.82),
-                      Color(red: 1.0, green: 0.85, blue: 0.70),
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                  )
-                )
-                .overlay(
-                  Capsule()
-                    .stroke(Color(red: 0.90, green: 0.75, blue: 0.55), lineWidth: 1)
-                )
-            )
-        }
-        .buttonStyle(.plain)
-        .pointingHandCursor()
-      }
-      .padding(.bottom, 28)
-    }
-    .frame(width: 380)
-    .shadow(color: Color.black.opacity(0.08), radius: 16, x: 0, y: 6)
-  }
-
   // MARK: - Unlocked Content
   @ViewBuilder
   var unlockedContent: some View {
@@ -192,26 +61,6 @@ struct JournalView: View {
     }
   }
 
-  // MARK: - Logic
-  func validateCode() {
-    // Lowercase input and compute SHA256 hash
-    let inputLowercased = accessCode.lowercased()
-    let inputData = Data(inputLowercased.utf8)
-    let inputHash = SHA256.hash(data: inputData)
-    let inputHashString = inputHash.compactMap { String(format: "%02x", $0) }.joined()
-
-    if inputHashString == requiredCodeHash {
-      AnalyticsService.shared.capture("journal_unlocked")
-      withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
-        isUnlocked = true
-      }
-    } else {
-      withAnimation(.default) {
-        attempts += 1
-        accessCode = ""
-      }
-    }
-  }
 }
 
 // MARK: - Journal Onboarding View
