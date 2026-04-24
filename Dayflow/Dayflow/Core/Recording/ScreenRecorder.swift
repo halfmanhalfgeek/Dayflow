@@ -225,6 +225,11 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
   // MARK: - Capture Setup
 
   private func setupCapture(attempt: Int = 1, maxAttempts: Int = 4) async {
+    guard ScreenRecordingPermissionNotice.isGranted else {
+      handleMissingScreenRecordingPermission(reason: "setupCapture")
+      return
+    }
+
     do {
       // 1. Get shareable content (requires screen recording permission)
       let content = try await SCShareableContent.excludingDesktopWindows(
@@ -277,6 +282,11 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
 
     } catch {
       dbg("setupCapture failed [attempt \(attempt)] – \(error.localizedDescription)")
+
+      if !ScreenRecordingPermissionNotice.isGranted {
+        handleMissingScreenRecordingPermission(reason: "setupCapture_failed_permission")
+        return
+      }
 
       q.async { [weak self] in
         self?.transition(to: .idle, context: "setupCapture failed")
@@ -336,6 +346,10 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
       dbg("captureScreenshot skipped - no display")
       return
     }
+    guard ScreenRecordingPermissionNotice.isGranted else {
+      handleMissingScreenRecordingPermission(reason: "captureScreenshot")
+      return
+    }
 
     let captureTime = Date()
     let idleSecondsAtCapture = InputIdleSnapshot.currentIdleSeconds()
@@ -386,6 +400,11 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
     } catch {
       dbg("❌ Screenshot capture failed: \(error.localizedDescription)")
 
+      if !ScreenRecordingPermissionNotice.isGranted {
+        handleMissingScreenRecordingPermission(reason: "captureScreenshot_failed_permission")
+        return
+      }
+
       // If display became unavailable, try to refresh
       if (error as NSError).domain == SCStreamErrorDomain {
         dbg("SCStream error - will refresh display on next capture")
@@ -395,6 +414,11 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
   }
 
   private func refreshDisplay() async {
+    guard ScreenRecordingPermissionNotice.isGranted else {
+      handleMissingScreenRecordingPermission(reason: "refreshDisplay")
+      return
+    }
+
     do {
       let content = try await SCShareableContent.excludingDesktopWindows(
         false, onScreenWindowsOnly: true)
@@ -415,7 +439,37 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         currentDisplayID = first.displayID
       }
     } catch {
+      if !ScreenRecordingPermissionNotice.isGranted {
+        handleMissingScreenRecordingPermission(reason: "refreshDisplay_failed_permission")
+        return
+      }
+
       dbg("Failed to refresh display: \(error)")
+    }
+  }
+
+  private func handleMissingScreenRecordingPermission(reason: String) {
+    q.async { [weak self] in
+      guard let self else { return }
+      self.stopCaptureTimer()
+      self.cachedContent = nil
+      self.cachedDisplay = nil
+      self.currentDisplayID = nil
+      if self.state != .idle {
+        self.transition(to: .idle, context: "missing screen recording permission")
+      }
+      self.wantsRecording = false
+    }
+
+    Task { @MainActor in
+      if AppState.shared.isRecording {
+        AppState.shared.setRecording(
+          false,
+          analyticsReason: "permission_missing",
+          persistPreference: false
+        )
+      }
+      ScreenRecordingPermissionNotice.post(reason: reason)
     }
   }
 
