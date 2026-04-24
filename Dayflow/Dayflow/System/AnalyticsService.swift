@@ -340,8 +340,8 @@ final class AnalyticsService {
   private func sanitize(_ props: [String: Any]) -> [String: Any] {
     // Drop known sensitive keys if ever passed by mistake
     let blocked = Set([
-      "api_key", "token", "authorization", "file_path", "url", "window_title", "clipboard",
-      "screen_content", "host",
+      "api_key", "token", "authorization", "file_path", "url", "base_url", "window_title",
+      "clipboard", "screen_content", "host",
     ])
     var out: [String: Any] = [:]
     for (k, v) in props {
