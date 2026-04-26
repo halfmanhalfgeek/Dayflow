@@ -78,18 +78,28 @@ final class AnalyticsService {
   /// Source of truth is PostHog SDK storage (not keychain).
   func backendAuthToken() -> String {
     let defaults = UserDefaults.standard
-    if let override = defaults.string(forKey: backendAuthOverrideTokenKey)?
-      .trimmingCharacters(in: .whitespacesAndNewlines),
-      !override.isEmpty
-    {
-      #if DEBUG
-        print(
-          "[AnalyticsService] backendAuthToken source=debug_override_user_defaults "
-            + "id=\(override) length=\(override.count)"
-        )
-      #endif
-      return override
-    }
+    #if DEBUG
+      if let override = defaults.string(forKey: backendAuthOverrideTokenKey)?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+        !override.isEmpty
+      {
+        // This override feeds the legacy Daily/PostHog auth path only.
+        // Dayflow account session tokens are intentionally ignored here; CardGen
+        // reads them through DayflowAuthManager instead.
+        if override.hasPrefix("dfs:") {
+          print(
+            "[AnalyticsService] backendAuthToken ignored_debug_override "
+              + "reason=dayflow_session_token length=\(override.count)"
+          )
+        } else {
+          print(
+            "[AnalyticsService] backendAuthToken source=debug_override_user_defaults "
+              + "length=\(override.count)"
+          )
+          return override
+        }
+      }
+    #endif
 
     let distinctId = PostHogSDK.shared.getDistinctId().trimmingCharacters(
       in: .whitespacesAndNewlines)
@@ -97,7 +107,7 @@ final class AnalyticsService {
       #if DEBUG
         print(
           "[AnalyticsService] backendAuthToken source=posthog_distinct_id "
-            + "id=\(distinctId) length=\(distinctId.count)"
+            + "length=\(distinctId.count)"
         )
       #endif
       return distinctId
@@ -112,12 +122,12 @@ final class AnalyticsService {
       {
         print(
           "[AnalyticsService] backendAuthToken source=debug_fallback_existing "
-            + "id=\(existing) length=\(existing.count)"
+            + "length=\(existing.count)"
         )
         if existing.hasPrefix("local-") {
           print(
             "[AnalyticsService] backendAuthToken warning=fallback_token_looks_local "
-              + "id=\(existing)"
+              + "length=\(existing.count)"
           )
         }
         return existing
@@ -127,12 +137,19 @@ final class AnalyticsService {
       defaults.set(generated, forKey: backendAuthFallbackTokenKey)
       print(
         "[AnalyticsService] backendAuthToken source=debug_fallback_generated "
-          + "id=\(generated) length=\(generated.count)"
+          + "length=\(generated.count)"
       )
       return generated
     #else
       return ""
     #endif
+  }
+
+  func postHogDistinctIdForAppcast() -> String? {
+    guard isOptedIn else { return nil }
+    let distinctId = PostHogSDK.shared.getDistinctId().trimmingCharacters(
+      in: .whitespacesAndNewlines)
+    return distinctId.isEmpty ? nil : distinctId
   }
 
   func setOptIn(_ enabled: Bool) {
@@ -186,9 +203,12 @@ final class AnalyticsService {
   func capture(_ name: String, _ props: [String: Any] = [:]) {
     guard isOptedIn else { return }
     let sanitized = sanitize(props)
-    Task.detached(priority: .utility) {
-      PostHogSDK.shared.capture(name, properties: sanitized)
-    }
+    PostHogSDK.shared.capture(name, properties: sanitized)
+  }
+
+  func flush() {
+    guard isOptedIn else { return }
+    PostHogSDK.shared.flush()
   }
 
   func featureFlagVariant(_ key: String) -> String? {
