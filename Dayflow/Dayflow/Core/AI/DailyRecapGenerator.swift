@@ -421,6 +421,9 @@ final class DailyRecapGenerator {
   }
 
   private func makeDayflowProvider() -> DayflowBackendProvider? {
+    // Daily intentionally uses the legacy PostHog distinct-id token contract.
+    // CardGen uses DayflowAuthManager session tokens, but Daily should not
+    // move to account-session auth without an explicit app migration.
     let token = AnalyticsService.shared.backendAuthToken()
       .trimmingCharacters(in: .whitespacesAndNewlines)
     guard !token.isEmpty else { return nil }
