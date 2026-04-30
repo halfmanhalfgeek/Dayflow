@@ -117,7 +117,8 @@ struct WeeklyTreemapLeafTile: View {
       let typography = WeeklyTreemapLeafTypography.resolve(for: proxy.size)
       let presentationMode = WeeklyTreemapLeafPresentationMode.resolve(
         for: proxy.size,
-        hasChange: app.change != nil
+        hasChange: app.change != nil,
+        hasFavicon: app.faviconAssetName != nil
       )
 
       RoundedRectangle(cornerRadius: Design.cornerRadius, style: .continuous)
@@ -164,7 +165,7 @@ struct WeeklyTreemapLeafTile: View {
 
   func fullContent(using typography: WeeklyTreemapLeafTypography) -> some View {
     VStack(spacing: typography.lineSpacing) {
-      nameText(fontSize: typography.nameFontSize)
+      nameRow(fontSize: typography.nameFontSize)
 
       Text(app.formattedDuration)
         .font(.custom("Nunito-Regular", size: typography.detailFontSize))
@@ -184,7 +185,7 @@ struct WeeklyTreemapLeafTile: View {
 
   func compactContent(using typography: WeeklyTreemapLeafTypography) -> some View {
     VStack(spacing: max(typography.lineSpacing - 1, 1)) {
-      nameText(fontSize: max(typography.nameFontSize - 2, 11))
+      nameRow(fontSize: max(typography.nameFontSize - 2, 11))
 
       Text(app.formattedDuration)
         .font(.custom("Nunito-Regular", size: max(typography.detailFontSize - 1, 10)))
@@ -195,7 +196,7 @@ struct WeeklyTreemapLeafTile: View {
   }
 
   func labelOnlyContent(using typography: WeeklyTreemapLeafTypography) -> some View {
-    nameText(fontSize: max(typography.nameFontSize - 3, 10))
+    nameRow(fontSize: max(typography.nameFontSize - 3, 10))
   }
 
   @ViewBuilder
@@ -220,6 +221,29 @@ struct WeeklyTreemapLeafTile: View {
       .multilineTextAlignment(.center)
       .lineLimit(1)
       .minimumScaleFactor(0.7)
+  }
+
+  func nameRow(fontSize: CGFloat) -> some View {
+    HStack(spacing: 4) {
+      faviconImage(size: rowIconSize(forFontSize: fontSize))
+      nameText(fontSize: fontSize)
+    }
+  }
+
+  func rowIconSize(forFontSize fontSize: CGFloat) -> CGFloat {
+    max(12, (fontSize * 1.15).rounded(.toNearestOrAwayFromZero))
+  }
+
+  @ViewBuilder
+  func faviconImage(size: CGFloat) -> some View {
+    if let assetName = app.faviconAssetName {
+      Image(assetName)
+        .resizable()
+        .interpolation(.high)
+        .scaledToFit()
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
   }
 }
 
@@ -348,8 +372,18 @@ enum WeeklyTreemapLeafPresentationMode {
   case compact
   case labelOnly
 
-  static func resolve(for size: CGSize, hasChange: Bool) -> WeeklyTreemapLeafPresentationMode {
-    let fullHeight: CGFloat = hasChange ? 72 : 56
+  static func resolve(
+    for size: CGSize,
+    hasChange: Bool,
+    hasFavicon: Bool
+  ) -> WeeklyTreemapLeafPresentationMode {
+    let fullHeight: CGFloat
+    if hasChange {
+      fullHeight = hasFavicon ? 92 : 72
+    } else {
+      fullHeight = hasFavicon ? 70 : 56
+    }
+
     if size.width >= 90, size.height >= fullHeight {
       return .full
     }
