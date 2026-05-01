@@ -6,13 +6,13 @@ struct WeeklyDonutSection: View {
   let isLoading: Bool
 
   private enum Design {
-    static let cardWidth: CGFloat = 488
-    static let cardHeight: CGFloat = 305
+    static let cardWidth: CGFloat = 461
+    static let cardHeight: CGFloat = 300
     static let cornerRadius: CGFloat = 4
     static let borderColor = Color(hex: "EBE6E3")
     static let backgroundColor = Color.white.opacity(0.6)
     static let titleColor = Color(hex: "B46531")
-    static let contentSpacing: CGFloat = 59
+    static let contentSpacing: CGFloat = 32
     static let donutSize: CGFloat = 205
     static let legendWidth: CGFloat = 129
   }
@@ -37,12 +37,6 @@ struct WeeklyDonutSection: View {
       .padding(.leading, 29)
       .padding(.trailing, 18)
 
-      Text(snapshot.footerLabel)
-        .font(.custom("Nunito-Regular", size: 12))
-        .foregroundStyle(Color.black)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-        .padding(.trailing, 18)
-        .padding(.bottom, 14)
     }
     .frame(width: Design.cardWidth, height: Design.cardHeight, alignment: .topLeading)
     .clipShape(RoundedRectangle(cornerRadius: Design.cornerRadius, style: .continuous))
