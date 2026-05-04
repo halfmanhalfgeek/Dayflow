@@ -32,11 +32,11 @@ struct ReleaseNote: Identifiable {
   }
 }
 
-enum WhatsNewDesignSurveyOption: String, CaseIterable, Identifiable {
-  case bestDesigned = "Best-designed app I use"
-  case oneOfTheBest = "One of the best"
-  case goodNeedsPolish = "Good, but still needs polish"
-  case roughOrBuggy = "Too rough or buggy today"
+enum WhatsNewProInterestOption: String, CaseIterable, Identifiable {
+  case definitely = "Yes, definitely"
+  case probably = "Probably"
+  case maybe = "Maybe, if the quality is clearly better"
+  case no = "No"
 
   var id: String { rawValue }
 }
@@ -47,21 +47,19 @@ enum WhatsNewConfiguration {
   private static let seenKey = "lastSeenWhatsNewVersion"
 
   /// Override with the specific release number you want to show.
-  private static let versionOverride: String? = "1.10.0"
+  private static let versionOverride: String? = "1.11.0"
 
   /// Update this content before shipping each release. Return nil to disable the modal entirely.
   static var configuredRelease: ReleaseNote? {
     ReleaseNote(
       version: targetVersion,
-      title: "A new Week view for your timeline",
+      title: "Privacy controls for your timeline",
       highlights: [
-        "We've started rolling out a new Week view for your main timeline.",
-        "You can now step back and scan your week at a glance. We're still refining the Week view, so if you notice bugs or rough edges, please reach out. We'd love your feedback.",
-        "Codex-powered flows in Dayflow now use newer GPT-5.4 models.",
+        "You can now choose specific apps Dayflow should hide from recording.",
+        "Open Settings -> Privacy and pick the apps you never want captured.",
       ],
-      previewIntro:
-        "A few previews from the new Week view are below.",
-      previewImageNames: ["WeeklyCalendarPreview", "WeeklyPreview"],
+      previewIntro: nil,
+      previewImageNames: [],
       cta: nil
     )
   }
@@ -121,15 +119,19 @@ struct WhatsNewView: View {
   let onDismiss: () -> Void
 
   @Environment(\.openURL) private var openURL
-  @AppStorage("whatsNewDesignRatingSubmittedVersion") private var submittedDesignRatingVersion:
+  @AppStorage("whatsNewProInterestSubmittedVersion") private var submittedProInterestVersion:
     String = ""
-  @AppStorage("whatsNewReferenceAppsSubmittedVersion") private var submittedReferenceAppsVersion:
-    String = ""
-  @State private var selectedDesignSurveyOptionID = ""
-  @State private var referenceAppsResponse = ""
+  @AppStorage("whatsNewProPriceSubmittedVersion") private var submittedProPriceVersion: String = ""
+  @State private var selectedProInterestOptionID = ""
+  @State private var proPriceResponse = ""
+  @State private var releaseSurveyResponseID = ""
+  @State private var isSubmittingProInterest = false
+  @State private var isSubmittingProPrice = false
+  @State private var surveyErrorText: String?
   @State private var didHydrateSurveyState = false
 
   private let bottomAnchorID = "whats_new_bottom_anchor"
+  private let releaseSurveyKey = "pro_pricing"
 
   var body: some View {
     ScrollView {
@@ -251,7 +253,7 @@ struct WhatsNewView: View {
   private var surveySection: some View {
     VStack(alignment: .leading, spacing: 12) {
       Text(
-        "We want Dayflow to become one of the best-designed apps in the world. Where do you think it stands today?"
+        "We're exploring a Dayflow Pro plan that handles the AI side for you: no setup, fewer rate-limit headaches, and maximum access to the strongest models we can support."
       )
       .font(.custom("Nunito", size: 15))
       .fontWeight(.semibold)
@@ -259,45 +261,46 @@ struct WhatsNewView: View {
       .fixedSize(horizontal: false, vertical: true)
 
       Text(
-        "Choose the option that feels closest, then tell us which apps feel exceptionally well designed to you."
+        "Frontier AI models are expensive to run, so we're trying to understand what kind of Pro plan would feel genuinely worth it."
       )
       .font(.custom("Nunito", size: 13))
       .foregroundColor(.black.opacity(0.62))
       .fixedSize(horizontal: false, vertical: true)
 
+      Text(
+        "Would you pay for a Dayflow Pro plan that handles everything and gives you the best available intelligence without rate-limit headaches?"
+      )
+      .font(.custom("Nunito", size: 14))
+      .fontWeight(.semibold)
+      .foregroundColor(.black.opacity(0.82))
+      .fixedSize(horizontal: false, vertical: true)
+
       VStack(spacing: 10) {
-        ForEach(WhatsNewDesignSurveyOption.allCases) { option in
-          designSurveyOptionRow(option)
+        ForEach(WhatsNewProInterestOption.allCases) { option in
+          proInterestOptionRow(option)
         }
       }
 
       VStack(alignment: .leading, spacing: 8) {
-        Text("Which apps feel exceptionally well designed to you?")
-          .font(.custom("Nunito", size: 14))
-          .fontWeight(.semibold)
-          .foregroundColor(.black.opacity(0.82))
-
         Text(
-          hasSubmittedDesignRating
-            ? "Optional. This helps us understand the bar you're comparing Dayflow against."
-            : "Optional. Pick a rating first, then share the apps you're comparing Dayflow against."
+          "At what monthly price would Dayflow Pro start to feel expensive, but you'd still buy it?"
         )
-        .font(.custom("Nunito", size: 13))
-        .foregroundColor(.black.opacity(0.58))
-        .fixedSize(horizontal: false, vertical: true)
+        .font(.custom("Nunito", size: 14))
+        .fontWeight(.semibold)
+        .foregroundColor(.black.opacity(0.82))
 
         ZStack {
           RoundedRectangle(cornerRadius: 10, style: .continuous)
             .fill(Color.white)
 
           WhatsNewSurveyTextEditor(
-            text: $referenceAppsResponse,
-            placeholder: "Examples: Linear, Raycast, Apple Notes, Arc...",
-            isEditable: !hasSubmittedReferenceApps
+            text: $proPriceResponse,
+            placeholder: "",
+            isEditable: !hasSubmittedProPrice
           )
-          .frame(height: 86)
-          .onChange(of: referenceAppsResponse) {
-            persistReferenceAppsResponse()
+          .frame(height: 64)
+          .onChange(of: proPriceResponse) {
+            persistProPriceResponse()
           }
           .environment(\.colorScheme, .light)
           .preferredColorScheme(.light)
@@ -306,21 +309,21 @@ struct WhatsNewView: View {
           RoundedRectangle(cornerRadius: 10, style: .continuous)
             .stroke(Color.black.opacity(0.1), lineWidth: 1)
         )
-        .opacity(hasSubmittedReferenceApps ? 0.72 : 1)
+        .opacity(hasSubmittedProPrice ? 0.72 : 1)
       }
 
       HStack {
         Spacer()
         DayflowSurfaceButton(
-          action: submitReferenceApps,
+          action: submitProPrice,
           content: {
-            Text("Send apps")
+            Text(isSubmittingProPrice ? "Submitting..." : "Submit")
               .font(.custom("Nunito", size: 15))
               .fontWeight(.semibold)
           },
-          background: canSubmitReferenceApps
+          background: canSubmitProPrice
             ? Color(red: 0.25, green: 0.17, blue: 0) : Color.black.opacity(0.08),
-          foreground: .white.opacity(canSubmitReferenceApps ? 1 : 0.7),
+          foreground: .white.opacity(canSubmitProPrice ? 1 : 0.7),
           borderColor: .clear,
           cornerRadius: 8,
           horizontalPadding: 34,
@@ -328,18 +331,19 @@ struct WhatsNewView: View {
           minWidth: 160,
           showOverlayStroke: true
         )
-        .disabled(!canSubmitReferenceApps)
-        .opacity(canSubmitReferenceApps ? 1 : 0.8)
+        .disabled(!canSubmitProPrice)
+        .opacity(canSubmitProPrice ? 1 : 0.8)
       }
 
-      if hasSubmittedDesignRating {
-        Label("Thanks for rating Dayflow.", systemImage: "checkmark.circle.fill")
-          .font(.custom("Nunito", size: 14))
-          .foregroundColor(Color(red: 0.25, green: 0.17, blue: 0))
+      if let surveyErrorText {
+        Text(surveyErrorText)
+          .font(.custom("Nunito", size: 13))
+          .foregroundColor(Color.red.opacity(0.75))
+          .fixedSize(horizontal: false, vertical: true)
       }
 
-      if hasSubmittedReferenceApps {
-        Label("Thanks for sharing!", systemImage: "checkmark.circle.fill")
+      if hasSubmittedProPrice {
+        Label("Thanks for sharing your interest.", systemImage: "checkmark.circle.fill")
           .font(.custom("Nunito", size: 14))
           .foregroundColor(Color(red: 0.25, green: 0.17, blue: 0))
       }
@@ -349,11 +353,11 @@ struct WhatsNewView: View {
     .preferredColorScheme(.light)
   }
 
-  private func designSurveyOptionRow(_ option: WhatsNewDesignSurveyOption) -> some View {
-    let isSelected = selectedDesignSurveyOption == option
+  private func proInterestOptionRow(_ option: WhatsNewProInterestOption) -> some View {
+    let isSelected = selectedProInterestOption == option
 
     return Button(action: {
-      selectDesignSurveyOption(option)
+      selectProInterestOption(option)
     }) {
       HStack(spacing: 12) {
         ZStack {
@@ -400,8 +404,7 @@ struct WhatsNewView: View {
     }
     .buttonStyle(.plain)
     .pointingHandCursor()
-    .disabled(hasSubmittedDesignRating)
-    .opacity(hasSubmittedDesignRating ? 0.75 : 1)
+    .disabled(isSubmittingProInterest)
   }
 
   private func ctaSection(_ cta: ReleaseNoteCTA) -> some View {
@@ -453,92 +456,148 @@ struct WhatsNewView: View {
     openURL(url)
   }
 
-  private var hasSubmittedDesignRating: Bool {
-    submittedDesignRatingVersion == releaseNote.version
+  private var hasSubmittedProInterest: Bool {
+    submittedProInterestVersion == releaseNote.version
   }
 
-  private var hasSubmittedReferenceApps: Bool {
-    submittedReferenceAppsVersion == releaseNote.version
+  private var hasSubmittedProPrice: Bool {
+    submittedProPriceVersion == releaseNote.version
   }
 
-  private var selectedDesignSurveyOption: WhatsNewDesignSurveyOption? {
-    WhatsNewDesignSurveyOption(rawValue: selectedDesignSurveyOptionID)
+  private var selectedProInterestOption: WhatsNewProInterestOption? {
+    WhatsNewProInterestOption(rawValue: selectedProInterestOptionID)
   }
 
-  private var referenceAppsResponseTrimmed: String {
-    referenceAppsResponse.trimmingCharacters(in: .whitespacesAndNewlines)
+  private var proPriceResponseTrimmed: String {
+    proPriceResponse.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
-  private var canSubmitReferenceApps: Bool {
-    hasSubmittedDesignRating && !hasSubmittedReferenceApps && !referenceAppsResponseTrimmed.isEmpty
+  private var canSubmitProPrice: Bool {
+    hasSubmittedProInterest && !hasSubmittedProPrice && !isSubmittingProPrice
+      && !proPriceResponseTrimmed.isEmpty
   }
 
-  private func selectDesignSurveyOption(_ option: WhatsNewDesignSurveyOption) {
-    guard !hasSubmittedDesignRating else { return }
-    selectedDesignSurveyOptionID = option.rawValue
-    persistSelectedDesignSurveyOption()
-    AnalyticsService.shared.capture(
-      "whats_new_design_rating_submitted",
-      [
-        "version": releaseNote.version,
-        "design_rating": option.rawValue,
-        "provider_label": currentProviderLabel,
-      ]
-    )
+  private func selectProInterestOption(_ option: WhatsNewProInterestOption) {
+    guard !isSubmittingProInterest else { return }
+    surveyErrorText = nil
 
-    submittedDesignRatingVersion = releaseNote.version
-  }
-
-  private func submitReferenceApps() {
-    guard hasSubmittedDesignRating else { return }
-    guard !hasSubmittedReferenceApps else { return }
-
-    let referenceApps = String(referenceAppsResponseTrimmed.prefix(1000))
-    guard !referenceApps.isEmpty else { return }
-
-    var props: [String: Any] = [
-      "version": releaseNote.version,
-      "reference_apps": referenceApps,
-      "provider_label": currentProviderLabel,
-    ]
-    if let selectedOption = selectedDesignSurveyOption {
-      props["design_rating"] = selectedOption.rawValue
+    Task {
+      if await submitReleaseSurvey(proInterest: option.rawValue, proPrice: nil) {
+        selectedProInterestOptionID = option.rawValue
+        persistSelectedProInterestOption()
+        submittedProInterestVersion = releaseNote.version
+      }
     }
-
-    AnalyticsService.shared.capture(
-      "whats_new_design_reference_apps_submitted",
-      props
-    )
-
-    submittedReferenceAppsVersion = releaseNote.version
-    referenceAppsResponse = referenceApps
-    persistReferenceAppsResponse()
   }
 
-  private func persistSelectedDesignSurveyOption() {
+  private func submitProPrice() {
+    guard hasSubmittedProInterest else { return }
+    guard !hasSubmittedProPrice else { return }
+
+    let proPrice = String(proPriceResponseTrimmed.prefix(200))
+    guard !proPrice.isEmpty else { return }
+
+    surveyErrorText = nil
+
+    Task {
+      if await submitReleaseSurvey(
+        proInterest: selectedProInterestOption?.rawValue,
+        proPrice: proPrice
+      ) {
+        submittedProPriceVersion = releaseNote.version
+        proPriceResponse = proPrice
+        persistProPriceResponse()
+      }
+    }
+  }
+
+  private func persistSelectedProInterestOption() {
     UserDefaults.standard.set(
-      selectedDesignSurveyOptionID,
-      forKey: selectedDesignSurveyOptionStorageKey
+      selectedProInterestOptionID,
+      forKey: selectedProInterestOptionStorageKey
     )
   }
 
-  private func persistReferenceAppsResponse() {
-    UserDefaults.standard.set(referenceAppsResponse, forKey: referenceAppsResponseStorageKey)
+  private func persistProPriceResponse() {
+    UserDefaults.standard.set(proPriceResponse, forKey: proPriceResponseStorageKey)
   }
 
   private func hydrateSurveyStateIfNeeded() {
-    selectedDesignSurveyOptionID =
-      UserDefaults.standard.string(forKey: selectedDesignSurveyOptionStorageKey) ?? ""
-    referenceAppsResponse =
-      UserDefaults.standard.string(forKey: referenceAppsResponseStorageKey) ?? ""
+    selectedProInterestOptionID =
+      UserDefaults.standard.string(forKey: selectedProInterestOptionStorageKey) ?? ""
+    proPriceResponse =
+      UserDefaults.standard.string(forKey: proPriceResponseStorageKey) ?? ""
+    releaseSurveyResponseID = loadReleaseSurveyResponseID()
   }
 
-  private var selectedDesignSurveyOptionStorageKey: String {
-    "whatsNewDesignSurveyOption_\(releaseNote.version)"
+  private var selectedProInterestOptionStorageKey: String {
+    "whatsNewProInterestOption_\(releaseNote.version)"
   }
 
-  private var referenceAppsResponseStorageKey: String {
-    "whatsNewReferenceAppsResponse_\(releaseNote.version)"
+  private var proPriceResponseStorageKey: String {
+    "whatsNewProPriceResponse_\(releaseNote.version)"
+  }
+
+  private var releaseSurveyResponseIDStorageKey: String {
+    "whatsNewReleaseSurveyResponseID_\(releaseNote.version)"
+  }
+
+  private func loadReleaseSurveyResponseID() -> String {
+    let defaults = UserDefaults.standard
+    if let existing = defaults.string(forKey: releaseSurveyResponseIDStorageKey),
+      !existing.isEmpty
+    {
+      return existing
+    }
+
+    let generated = UUID().uuidString.lowercased()
+    defaults.set(generated, forKey: releaseSurveyResponseIDStorageKey)
+    return generated
+  }
+
+  private func submitReleaseSurvey(proInterest: String?, proPrice: String?) async -> Bool {
+    let submittingPrice = proPrice != nil
+    if submittingPrice {
+      isSubmittingProPrice = true
+    } else {
+      isSubmittingProInterest = true
+    }
+
+    defer {
+      if submittingPrice {
+        isSubmittingProPrice = false
+      } else {
+        isSubmittingProInterest = false
+      }
+    }
+
+    do {
+      let responseID =
+        releaseSurveyResponseID.isEmpty
+        ? loadReleaseSurveyResponseID() : releaseSurveyResponseID
+      releaseSurveyResponseID = responseID
+      try await ReleaseSurveyClient.submit(
+        ReleaseSurveyPayload(
+          responseID: responseID,
+          surveyKey: releaseSurveyKey,
+          version: releaseNote.version,
+          proInterest: proInterest,
+          proPrice: proPrice,
+          appVersion: appVersion,
+          analyticsOptIn: AnalyticsService.shared.isOptedIn,
+          providerLabel: currentProviderLabel
+        )
+      )
+      surveyErrorText = nil
+      return true
+    } catch {
+      surveyErrorText = "Could not submit. Please try again."
+      return false
+    }
+  }
+
+  private var appVersion: String {
+    Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? releaseNote.version
   }
 
   private var currentProviderLabel: String {
@@ -554,6 +613,80 @@ struct WhatsNewView: View {
   private var preferredChatCLITool: ChatCLITool {
     let preferredTool = UserDefaults.standard.string(forKey: "chatCLIPreferredTool") ?? "codex"
     return preferredTool == "claude" ? .claude : .codex
+  }
+}
+
+private struct ReleaseSurveyPayload: Encodable {
+  let responseID: String
+  let surveyKey: String
+  let version: String
+  let proInterest: String?
+  let proPrice: String?
+  let appVersion: String
+  let analyticsOptIn: Bool
+  let providerLabel: String
+
+  enum CodingKeys: String, CodingKey {
+    case responseID = "response_id"
+    case surveyKey = "survey_key"
+    case version
+    case proInterest = "pro_interest"
+    case proPrice = "pro_price"
+    case appVersion = "app_version"
+    case analyticsOptIn = "analytics_opt_in"
+    case providerLabel = "provider_label"
+  }
+}
+
+private enum ReleaseSurveyClient {
+  private static let infoPlistEndpointKey = "DayflowBackendURL"
+  private static let debugEndpointOverrideKey = "dayflowBackendURLOverride"
+
+  static func submit(_ payload: ReleaseSurveyPayload) async throws {
+    guard let url = releaseSurveyURL() else {
+      throw URLError(.badURL)
+    }
+
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.httpBody = try JSONEncoder().encode(payload)
+
+    let (_, response) = try await URLSession.shared.data(for: request)
+    guard let httpResponse = response as? HTTPURLResponse,
+      (200..<300).contains(httpResponse.statusCode)
+    else {
+      throw URLError(.badServerResponse)
+    }
+  }
+
+  private static func releaseSurveyURL() -> URL? {
+    guard let endpoint = resolvedEndpoint() else { return nil }
+    return URL(string: "\(endpoint)/v1/release-survey")
+  }
+
+  private static func resolvedEndpoint() -> String? {
+    #if DEBUG
+      if let override = UserDefaults.standard.string(forKey: debugEndpointOverrideKey)?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+        !override.isEmpty
+      {
+        return override.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+      }
+    #endif
+
+    if let infoEndpoint = Bundle.main.infoDictionary?[infoPlistEndpointKey] as? String {
+      let trimmed = infoEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !trimmed.isEmpty {
+        return trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+      }
+    }
+
+    #if DEBUG
+      return "https://web-production-f3361.up.railway.app"
+    #else
+      return nil
+    #endif
   }
 }
 
