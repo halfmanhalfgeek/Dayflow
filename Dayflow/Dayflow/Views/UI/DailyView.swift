@@ -4,7 +4,7 @@ import SwiftUI
 import UserNotifications
 
 struct DailyView: View {
-  @AppStorage("isDailyUnlocked") private var isUnlocked: Bool = true
+  @AppStorage("isDailyUnlocked") var isUnlocked: Bool = true
   @Binding var selectedDate: Date
   @EnvironmentObject var categoryStore: CategoryStore
 
