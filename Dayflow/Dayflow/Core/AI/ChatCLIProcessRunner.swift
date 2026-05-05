@@ -116,6 +116,7 @@ struct ChatCLIProcessRunner {
     environment: [String: String],
     isFallbackRetry: Bool
   ) {
+    #if DEBUG
     let retryLabel = isFallbackRetry ? " fallback retry" : ""
     print("[ChatCLI] Executing \(tool.rawValue)\(retryLabel):\n\(shellCommand)")
 
@@ -126,6 +127,7 @@ struct ChatCLIProcessRunner {
       .map { "\($0.key)=\(LoginShellRunner.shellEscape($0.value))" }
       .joined(separator: "\n")
     print("[ChatCLI] Environment overrides:\n\(environmentText)")
+    #endif
   }
 
   func containsInvalidTransportError(_ stderr: String) -> Bool {
@@ -210,7 +212,9 @@ struct ChatCLIProcessRunner {
     do {
       try fileManager.createDirectory(at: tempCodexHome, withIntermediateDirectories: true)
     } catch {
+      #if DEBUG
       print("[ChatCLI] Failed to create temporary CODEX_HOME: \(error.localizedDescription)")
+      #endif
       return nil
     }
 
@@ -542,10 +546,12 @@ struct ChatCLIProcessRunner {
         workingDirectory: workingDirectory,
         hasRetriedInvalidTransport: hasRetriedInvalidTransport)
     {
+      #if DEBUG
       print(
         "[ChatCLI] Retrying Codex with temporary CODEX_HOME after invalid transport in \(fallback.brokenConfigURL.path)"
           + (fallback.didCopyAuth ? " (copied auth.json)" : "")
       )
+      #endif
       defer { fallback.cleanup() }
       try await executeStreaming(
         tool: tool,
@@ -893,10 +899,12 @@ struct ChatCLIProcessRunner {
         workingDirectory: workingDirectory,
         hasRetriedInvalidTransport: hasRetriedInvalidTransport)
     {
+      #if DEBUG
       print(
         "[ChatCLI] Retrying Codex with temporary CODEX_HOME after invalid transport in \(fallback.brokenConfigURL.path)"
           + (fallback.didCopyAuth ? " (copied auth.json)" : "")
       )
+      #endif
       defer { fallback.cleanup() }
       return try run(
         tool: tool,
