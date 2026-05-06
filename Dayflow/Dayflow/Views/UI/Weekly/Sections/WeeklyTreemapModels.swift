@@ -61,6 +61,11 @@ struct WeeklyTreemapApp: Identifiable {
     duration.weeklyTreemapDurationString
   }
 
+  var faviconAssetName: String? {
+    guard !isAggregate, !isPlaceholder else { return nil }
+    return WeeklyTreemapFavicon.assetName(forID: id, name: name)
+  }
+
   static func displayOrder(_ lhs: WeeklyTreemapApp, _ rhs: WeeklyTreemapApp) -> Bool {
     if lhs.weight != rhs.weight {
       return lhs.weight > rhs.weight
@@ -89,6 +94,41 @@ struct WeeklyTreemapApp: Identifiable {
       isAggregate: true,
       isPlaceholder: false
     )
+  }
+}
+
+enum WeeklyTreemapFavicon {
+  static func assetName(forID id: String, name: String) -> String? {
+    let lookupText = "\(id) \(name)".lowercased()
+    if id == "x" || name.lowercased() == "x" || lookupText.contains("twitter") {
+      return "XFavicon"
+    }
+
+    let assetMatches: [(needle: String, assetName: String)] = [
+      ("dayflow", "DayflowLogoMainApp"),
+      ("claude", "ClaudeLogo"),
+      ("chatgpt", "ChatGPTLogo"),
+      ("youtube", "YouTubeFavicon"),
+      ("reddit", "RedditFavicon"),
+      ("leagueoflegends", "LeagueOfLegendsFavicon"),
+      ("league of legends", "LeagueOfLegendsFavicon"),
+      ("google", "GoogleFavicon"),
+      ("mail", "MailFavicon"),
+      ("maps", "MapsFavicon"),
+      ("chrome", "ChromeFavicon"),
+      ("safari", "SafariFavicon"),
+      ("calendar", "CalendarFavicon"),
+      ("messages", "MessagesFavicon"),
+      ("xcode", "XCodeFavicon"),
+      ("vscode", "VSCodeFavicon"),
+      ("vs code", "VSCodeFavicon"),
+      ("terminal", "TerminalFavicon"),
+      ("ghostty", "GhosttyFavicon"),
+      ("finder", "FinderFavicon"),
+      ("settings", "SettingsFavicon"),
+    ]
+
+    return assetMatches.first { lookupText.contains($0.needle) }?.assetName
   }
 }
 
@@ -146,6 +186,14 @@ struct WeeklyTreemapPalette {
     tileFill: Color(hex: "EEF4FF"),
     tileBorder: Color(hex: "B9D4FF"),
     headerText: Color(hex: "2061F5")
+  )
+
+  static let general = WeeklyTreemapPalette(
+    shellFill: Color(hex: "8D8C8A").opacity(0.18),
+    shellBorder: Color(hex: "C8C2BC"),
+    tileFill: Color(hex: "F5F3F1"),
+    tileBorder: Color(hex: "D8D2CC"),
+    headerText: Color(hex: "77706A")
   )
 }
 

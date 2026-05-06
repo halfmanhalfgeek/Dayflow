@@ -294,7 +294,7 @@ private struct WeeklyOverviewTimelineBar: View {
     return RoundedRectangle(cornerRadius: 1, style: .continuous)
       .fill(gradient(for: segment.colorHex))
       .frame(width: segmentWidth, height: Design.segmentHeight)
-      .offset(x: segmentX + 1, y: 3)
+      .offset(x: segmentX + 1)
   }
 
   private func gradient(for colorHex: String) -> LinearGradient {
@@ -376,17 +376,19 @@ private struct WeeklyOverviewSummaryMetric: Identifiable {
 }
 
 extension WeeklyOverviewSnapshot {
-  fileprivate static let preview = WeeklyOverviewSnapshot(
+  static let figmaPreview = WeeklyOverviewSnapshot(
     rows: [
       WeeklyOverviewRow(
         id: "mon",
         label: "Mon",
         weekdayName: "Monday",
         segments: [
-          segment("mon-research", "research", "93BCFF", 564, 590),
-          segment("mon-design-1", "design", "DE9DFC", 592, 836),
-          segment("mon-general", "general", "BFB6AE", 838, 904),
-          segment("mon-testing", "testing", "FFA189", 906, 1058),
+          segment("mon-alignment-1", "alignment", "6CDACD", 555, 573),
+          segment("mon-testing", "testing", "FFA189", 574, 725),
+          segment("mon-general-1", "general", "BFB6AE", 727, 771),
+          segment("mon-alignment-2", "alignment", "6CDACD", 773, 873),
+          segment("mon-general-2", "general", "BFB6AE", 875, 919),
+          segment("mon-research", "research", "93BCFF", 921, 1065),
         ]
       ),
       WeeklyOverviewRow(
@@ -394,9 +396,10 @@ extension WeeklyOverviewSnapshot {
         label: "Tue",
         weekdayName: "Tuesday",
         segments: [
-          segment("tue-design", "design", "DE9DFC", 553, 844),
-          segment("tue-general", "general", "BFB6AE", 846, 888),
-          segment("tue-testing", "testing", "FFA189", 890, 1072),
+          segment("tue-testing", "testing", "FFA189", 547, 731),
+          segment("tue-design", "design", "DE9DFC", 732, 760),
+          segment("tue-alignment", "alignment", "6CDACD", 761, 880),
+          segment("tue-research", "research", "93BCFF", 881, 1040),
         ]
       ),
       WeeklyOverviewRow(
@@ -404,12 +407,13 @@ extension WeeklyOverviewSnapshot {
         label: "Wed",
         weekdayName: "Wednesday",
         segments: [
-          segment("wed-research", "research", "93BCFF", 564, 590),
-          segment("wed-design", "design", "DE9DFC", 592, 872),
-          segment("wed-alignment-1", "alignment", "6CDACD", 874, 902),
-          segment("wed-general", "general", "BFB6AE", 904, 966),
-          segment("wed-alignment-2", "alignment", "6CDACD", 968, 1028),
-          segment("wed-testing", "testing", "FFA189", 1030, 1072),
+          segment("wed-alignment-1", "alignment", "6CDACD", 555, 572),
+          segment("wed-design-1", "design", "DE9DFC", 574, 754),
+          segment("wed-research-1", "research", "93BCFF", 755, 773),
+          segment("wed-design-2", "design", "DE9DFC", 774, 815),
+          segment("wed-research-2", "research", "93BCFF", 816, 856),
+          segment("wed-design-3", "design", "DE9DFC", 858, 899),
+          segment("wed-alignment-2", "alignment", "6CDACD", 900, 1017),
         ]
       ),
       WeeklyOverviewRow(
@@ -417,12 +421,14 @@ extension WeeklyOverviewSnapshot {
         label: "Thu",
         weekdayName: "Thursday",
         segments: [
-          segment("thu-general", "general", "BFB6AE", 544, 636),
-          segment("thu-research", "research", "93BCFF", 638, 842),
-          segment("thu-design", "design", "DE9DFC", 844, 913),
-          segment("thu-testing", "testing", "FFA189", 915, 981),
-          segment("thu-alignment", "alignment", "6CDACD", 983, 1056),
-          segment("thu-general-2", "general", "BFB6AE", 1058, 1079),
+          segment("thu-alignment-1", "alignment", "6CDACD", 542, 603),
+          segment("thu-design-1", "design", "DE9DFC", 604, 736),
+          segment("thu-testing", "testing", "FFA189", 737, 782),
+          segment("thu-general", "general", "BFB6AE", 783, 826),
+          segment("thu-design-2", "design", "DE9DFC", 827, 871),
+          segment("thu-alignment-2", "alignment", "6CDACD", 872, 1010),
+          segment("thu-design-3", "design", "DE9DFC", 1011, 1038),
+          segment("thu-alignment-3", "alignment", "6CDACD", 1039, 1052),
         ]
       ),
       WeeklyOverviewRow(
@@ -430,10 +436,11 @@ extension WeeklyOverviewSnapshot {
         label: "Fri",
         weekdayName: "Friday",
         segments: [
-          segment("fri-general", "general", "BFB6AE", 550, 581),
-          segment("fri-alignment", "alignment", "6CDACD", 583, 890),
-          segment("fri-design", "design", "DE9DFC", 892, 1035),
-          segment("fri-research", "research", "93BCFF", 1037, 1072),
+          segment("fri-alignment-1", "alignment", "6CDACD", 547, 567),
+          segment("fri-design", "design", "DE9DFC", 569, 766),
+          segment("fri-alignment-2", "alignment", "6CDACD", 767, 863),
+          segment("fri-testing", "testing", "FFA189", 864, 1007),
+          segment("fri-alignment-3", "alignment", "6CDACD", 1008, 1019),
         ]
       ),
     ],
@@ -473,7 +480,7 @@ extension WeeklyOverviewSnapshot {
 }
 
 #Preview("Weekly Overview Section", traits: .fixedLayout(width: 958, height: 339)) {
-  WeeklyOverviewSection(snapshot: .preview)
+  WeeklyOverviewSection(snapshot: .figmaPreview)
     .padding(24)
     .background(Color(hex: "F7F3F0"))
 }

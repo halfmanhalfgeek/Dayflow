@@ -10,7 +10,9 @@ import SwiftUI
 
 struct SettingsView: View {
   private enum SettingsTab: String, CaseIterable, Identifiable {
+    case account
     case storage
+    case privacy
     case providers
     case data
     case other
@@ -19,7 +21,9 @@ struct SettingsView: View {
 
     var title: String {
       switch self {
+      case .account: return "Account"
       case .storage: return "Storage"
+      case .privacy: return "Privacy"
       case .providers: return "Providers"
       case .data: return "Export"
       case .other: return "Other"
@@ -27,13 +31,14 @@ struct SettingsView: View {
     }
   }
 
-  @State private var selectedTab: SettingsTab = .storage
+  @State private var selectedTab: SettingsTab = .account
 
   @Namespace private var sidebarSelectionNamespace
 
   @ObservedObject private var launchAtLoginManager = LaunchAtLoginManager.shared
 
   @StateObject private var storageViewModel = StorageSettingsViewModel()
+  @StateObject private var privacyViewModel = RecordingPrivacySettingsViewModel()
   @StateObject private var providersViewModel = ProvidersSettingsViewModel()
   @StateObject private var otherViewModel = OtherSettingsViewModel()
 
@@ -84,6 +89,7 @@ struct SettingsView: View {
         .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
     }
     .onAppear {
+      DayflowAuthManager.shared.loadStoredSessionIfNeeded()
       providersViewModel.handleOnAppear()
       otherViewModel.refreshAnalyticsState()
       storageViewModel.refreshStorageIfNeeded(isStorageTab: selectedTab == .storage)
@@ -93,12 +99,20 @@ struct SettingsView: View {
     .onChange(of: selectedTab) { _, newValue in
       if newValue == .storage {
         storageViewModel.refreshStorageIfNeeded(isStorageTab: true)
+      } else if newValue == .privacy {
+        privacyViewModel.handleOnAppear()
       }
     }
     .onReceive(NotificationCenter.default.publisher(for: .openProvidersSettings)) { _ in
       guard selectedTab != .providers else { return }
       withAnimation(.easeOut(duration: 0.18)) {
         selectedTab = .providers
+      }
+    }
+    .onReceive(NotificationCenter.default.publisher(for: .openAccountSettings)) { _ in
+      guard selectedTab != .account else { return }
+      withAnimation(.easeOut(duration: 0.18)) {
+        selectedTab = .account
       }
     }
   }
@@ -108,6 +122,26 @@ struct SettingsView: View {
       sidebar
         .frame(maxHeight: .infinity, alignment: .topLeading)
 
+      settingsContent
+
+      Spacer(minLength: 0)
+    }
+    .padding(.trailing, 40)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+  }
+
+  @ViewBuilder
+  private var settingsContent: some View {
+    if selectedTab == .privacy {
+      VStack(alignment: .leading, spacing: 24) {
+        tabContent
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+      .padding(.top, 24)
+      .padding(.trailing, 16)
+      .padding(.bottom, 24)
+      .frame(maxWidth: 760, maxHeight: .infinity, alignment: .topLeading)
+    } else {
       ScrollView(.vertical, showsIndicators: false) {
         VStack(alignment: .leading, spacing: 24) {
           tabContent
@@ -119,11 +153,7 @@ struct SettingsView: View {
         .frame(maxWidth: .infinity, minHeight: 0, alignment: .topLeading)
       }
       .frame(maxWidth: 600, maxHeight: .infinity, alignment: .topLeading)
-
-      Spacer(minLength: 0)
     }
-    .padding(.trailing, 40)
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
   }
 
   private var sidebar: some View {
@@ -208,8 +238,12 @@ struct SettingsView: View {
     // actually exist (the sidebar is vertical, not left/right tabs).
     Group {
       switch selectedTab {
+      case .account:
+        SettingsAccountSection()
       case .storage:
         SettingsStorageTabView(viewModel: storageViewModel)
+      case .privacy:
+        SettingsRecordingPrivacyTabView(viewModel: privacyViewModel)
       case .providers:
         SettingsProvidersTabView(viewModel: providersViewModel)
       case .data:

@@ -225,4 +225,17 @@ extension StorageManager {
       }) ?? []
   }
 
+  func countCompletedAnalysisBatchesForWeeklyAccess() -> Int {
+    (try? timedRead("countCompletedAnalysisBatchesForWeeklyAccess") { db in
+      try Int.fetchOne(
+        db,
+        sql: """
+              SELECT COUNT(*)
+              FROM analysis_batches
+              WHERE status IN ('completed', 'analyzed')
+          """
+      ) ?? 0
+    }) ?? 0
+  }
+
 }
