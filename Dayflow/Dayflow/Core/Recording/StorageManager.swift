@@ -256,6 +256,7 @@ final class StorageManager: StorageManaging, @unchecked Sendable {
 
     migrate()
     migrateLegacyChunkPathsIfNeeded()
+    truncateOversizedLLMCallBodiesIfNeeded()
 
     // Run initial purge, then schedule hourly
     purgeIfNeeded()
@@ -591,6 +592,32 @@ final class StorageManager: StorageManaging, @unchecked Sendable {
               CREATE INDEX IF NOT EXISTS idx_daily_standup_entries_created_at ON daily_standup_entries(created_at DESC);
           """)
 
+      // Day goals: user-defined focus/distraction targets and category assignments per timeline day
+      try db.execute(
+        sql: """
+              CREATE TABLE IF NOT EXISTS day_goals (
+                  day TEXT NOT NULL PRIMARY KEY,
+                  focus_target_minutes INTEGER NOT NULL,
+                  distraction_limit_minutes INTEGER NOT NULL,
+                  is_skipped INTEGER NOT NULL DEFAULT 0,
+                  created_at INTEGER NOT NULL,
+                  updated_at INTEGER NOT NULL
+              );
+              CREATE INDEX IF NOT EXISTS idx_day_goals_updated_at ON day_goals(updated_at DESC);
+
+              CREATE TABLE IF NOT EXISTS day_goal_categories (
+                  day TEXT NOT NULL,
+                  kind TEXT NOT NULL CHECK(kind IN ('focus', 'distraction')),
+                  category_id TEXT NOT NULL,
+                  category_name TEXT NOT NULL,
+                  category_color_hex TEXT NOT NULL,
+                  sort_order INTEGER NOT NULL,
+                  PRIMARY KEY (day, kind, category_id)
+              );
+              CREATE INDEX IF NOT EXISTS idx_day_goal_categories_day_kind
+              ON day_goal_categories(day, kind, sort_order);
+          """)
+
       // LLM calls logging table
       try db.execute(
         sql: """
@@ -654,6 +681,15 @@ final class StorageManager: StorageManaging, @unchecked Sendable {
                 ALTER TABLE screenshots ADD COLUMN idle_seconds_at_capture INTEGER;
             """)
         print("✅ Added idle_seconds_at_capture column to screenshots")
+      }
+
+      let dayGoalColumns = try db.columns(in: "day_goals").map { $0.name }
+      if !dayGoalColumns.contains("is_skipped") {
+        try db.execute(
+          sql: """
+                ALTER TABLE day_goals ADD COLUMN is_skipped INTEGER NOT NULL DEFAULT 0;
+            """)
+        print("✅ Added is_skipped column to day_goals")
       }
     }
   }

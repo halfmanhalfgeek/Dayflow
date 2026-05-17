@@ -82,7 +82,7 @@ private struct JournalOnboardingView: View {
       Text(
         "Dayflow helps you track your daily and longer term goals, gives you the space to reflect, and generates a summary of each day."
       )
-      .font(.custom("Nunito-Regular", size: 16))
+      .font(.custom("Figtree-Regular", size: 16))
       .foregroundColor(Color(red: 0.25, green: 0.15, blue: 0.10).opacity(0.8))
       .multilineTextAlignment(.center)
       .frame(maxWidth: 640)
@@ -93,7 +93,7 @@ private struct JournalOnboardingView: View {
       // Start onboarding button
       Button(action: onStartOnboarding) {
         Text("Start onboarding")
-          .font(.custom("Nunito-SemiBold", size: 16))
+          .font(.custom("Figtree-SemiBold", size: 16))
           .foregroundColor(Color(red: 0.35, green: 0.22, blue: 0.12))
           .padding(.horizontal, 32)
           .padding(.vertical, 12)

@@ -32,13 +32,30 @@ struct ReleaseNote: Identifiable {
   }
 }
 
-enum WhatsNewProInterestOption: String, CaseIterable, Identifiable {
-  case definitely = "Yes, definitely"
-  case probably = "Probably"
-  case maybe = "Maybe, if the quality is clearly better"
-  case no = "No"
+enum WhatsNewTaskOption: String, CaseIterable, Identifiable {
+  case manualPlan = "manual_plan"
+  case importedTasks = "imported_tasks"
+  case progressReview = "progress_review"
+  case tomorrowPriorities = "tomorrow_priorities"
+  case timeTrackingOnly = "time_tracking_only"
 
   var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .manualPlan:
+      return
+        "Let me write down what I want to get done, then automatically track progress from my day"
+    case .importedTasks:
+      return "Pull tasks from tools I already use, like Linear, Notion, Todoist, or my calendar"
+    case .progressReview:
+      return "Show me which planned tasks I actually made progress on"
+    case .tomorrowPriorities:
+      return "Carry unfinished work into tomorrow's priorities"
+    case .timeTrackingOnly:
+      return "Nothing; I want Dayflow to track my time, not manage my tasks"
+    }
+  }
 }
 
 // MARK: - What's New Configuration
@@ -53,10 +70,12 @@ enum WhatsNewConfiguration {
   static var configuredRelease: ReleaseNote? {
     ReleaseNote(
       version: targetVersion,
-      title: "Privacy controls for your timeline",
+      title: "Set goals for your day",
       highlights: [
-        "You can now choose specific apps Dayflow should hide from recording.",
-        "Open Settings -> Privacy and pick the apps you never want captured.",
+        "Dayflow is evolving from helping you understand your time to helping you improve how you spend it.",
+        "We're starting with daily focus targets: choose what counts as focus, set a distraction limit, and track your progress as the day unfolds.",
+        "Dayflow also has a cleaner visual system, with more readable text and a calmer, more consistent feel throughout the app.",
+        "Daily goal reminders can be turned off anytime in Settings.",
       ],
       previewIntro: nil,
       previewImageNames: [],
@@ -119,19 +138,16 @@ struct WhatsNewView: View {
   let onDismiss: () -> Void
 
   @Environment(\.openURL) private var openURL
-  @AppStorage("whatsNewProInterestSubmittedVersion") private var submittedProInterestVersion:
+  @AppStorage("whatsNewTaskOptionsSubmittedVersion") private var submittedTaskOptionsVersion:
     String = ""
-  @AppStorage("whatsNewProPriceSubmittedVersion") private var submittedProPriceVersion: String = ""
-  @State private var selectedProInterestOptionID = ""
-  @State private var proPriceResponse = ""
+  @State private var selectedTaskOptionIDs: Set<String> = []
   @State private var releaseSurveyResponseID = ""
-  @State private var isSubmittingProInterest = false
-  @State private var isSubmittingProPrice = false
+  @State private var isSubmittingTaskOptions = false
   @State private var surveyErrorText: String?
   @State private var didHydrateSurveyState = false
 
   private let bottomAnchorID = "whats_new_bottom_anchor"
-  private let releaseSurveyKey = "pro_pricing"
+  private let releaseSurveyKey = "task_planning"
 
   var body: some View {
     ScrollView {
@@ -167,7 +183,7 @@ struct WhatsNewView: View {
                 .padding(.top, 7)
 
               Text(highlight)
-                .font(.custom("Nunito", size: 15))
+                .font(.custom("Figtree", size: 15))
                 .foregroundColor(.black.opacity(0.75))
                 .fixedSize(horizontal: false, vertical: true)
             }
@@ -180,7 +196,7 @@ struct WhatsNewView: View {
           previewIntro.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         {
           Text(previewIntro)
-            .font(.custom("Nunito", size: 14))
+            .font(.custom("Figtree", size: 14))
             .foregroundColor(.black.opacity(0.72))
             .fixedSize(horizontal: false, vertical: true)
             .padding(.top, 6)
@@ -255,7 +271,7 @@ struct WhatsNewView: View {
       Text(
         "We're exploring a Dayflow Pro plan that handles the AI side for you: no setup, fewer rate-limit headaches, and maximum access to the strongest models we can support."
       )
-      .font(.custom("Nunito", size: 15))
+      .font(.custom("Figtree", size: 15))
       .fontWeight(.semibold)
       .foregroundColor(.black.opacity(0.85))
       .fixedSize(horizontal: false, vertical: true)
@@ -263,14 +279,14 @@ struct WhatsNewView: View {
       Text(
         "Frontier AI models are expensive to run, so we're trying to understand what kind of Pro plan would feel genuinely worth it."
       )
-      .font(.custom("Nunito", size: 13))
+      .font(.custom("Figtree", size: 13))
       .foregroundColor(.black.opacity(0.62))
       .fixedSize(horizontal: false, vertical: true)
 
       Text(
         "Would you pay for a Dayflow Pro plan that handles everything and gives you the best available intelligence without rate-limit headaches?"
       )
-      .font(.custom("Nunito", size: 14))
+      .font(.custom("Figtree", size: 14))
       .fontWeight(.semibold)
       .foregroundColor(.black.opacity(0.82))
       .fixedSize(horizontal: false, vertical: true)
@@ -285,7 +301,7 @@ struct WhatsNewView: View {
         Text(
           "At what monthly price would Dayflow Pro start to feel expensive, but you'd still buy it?"
         )
-        .font(.custom("Nunito", size: 14))
+        .font(.custom("Figtree", size: 14))
         .fontWeight(.semibold)
         .foregroundColor(.black.opacity(0.82))
 
@@ -318,7 +334,7 @@ struct WhatsNewView: View {
           action: submitProPrice,
           content: {
             Text(isSubmittingProPrice ? "Submitting..." : "Submit")
-              .font(.custom("Nunito", size: 15))
+              .font(.custom("Figtree", size: 15))
               .fontWeight(.semibold)
           },
           background: canSubmitProPrice
@@ -337,14 +353,14 @@ struct WhatsNewView: View {
 
       if let surveyErrorText {
         Text(surveyErrorText)
-          .font(.custom("Nunito", size: 13))
+          .font(.custom("Figtree", size: 13))
           .foregroundColor(Color.red.opacity(0.75))
           .fixedSize(horizontal: false, vertical: true)
       }
 
       if hasSubmittedProPrice {
         Label("Thanks for sharing your interest.", systemImage: "checkmark.circle.fill")
-          .font(.custom("Nunito", size: 14))
+          .font(.custom("Figtree", size: 14))
           .foregroundColor(Color(red: 0.25, green: 0.17, blue: 0))
       }
     }
@@ -376,7 +392,7 @@ struct WhatsNewView: View {
         }
 
         Text(option.rawValue)
-          .font(.custom("Nunito", size: 14))
+          .font(.custom("Figtree", size: 14))
           .foregroundColor(.black.opacity(0.82))
           .fixedSize(horizontal: false, vertical: true)
 
@@ -410,12 +426,12 @@ struct WhatsNewView: View {
   private func ctaSection(_ cta: ReleaseNoteCTA) -> some View {
     VStack(alignment: .leading, spacing: 10) {
       Text(cta.title)
-        .font(.custom("Nunito", size: 16))
+        .font(.custom("Figtree", size: 16))
         .fontWeight(.bold)
         .foregroundColor(.black.opacity(0.86))
 
       Text(cta.description)
-        .font(.custom("Nunito", size: 14))
+        .font(.custom("Figtree", size: 14))
         .foregroundColor(.black.opacity(0.75))
         .fixedSize(horizontal: false, vertical: true)
 
@@ -426,7 +442,7 @@ struct WhatsNewView: View {
             Image(systemName: "calendar")
               .font(.system(size: 12, weight: .semibold))
             Text(cta.buttonTitle)
-              .font(.custom("Nunito", size: 14))
+              .font(.custom("Figtree", size: 14))
               .fontWeight(.semibold)
           }
         },
@@ -715,7 +731,7 @@ private struct WhatsNewSurveyTextEditor: NSViewRepresentable {
     let textView = PlaceholderTextView()
     textView.delegate = context.coordinator
     textView.placeholder = placeholder
-    textView.font = NSFont(name: "Nunito", size: fontSize) ?? .systemFont(ofSize: fontSize)
+    textView.font = NSFont(name: "Figtree", size: fontSize) ?? .systemFont(ofSize: fontSize)
     textView.textColor = NSColor.black.withAlphaComponent(0.82)
     textView.insertionPointColor = .systemBlue
     textView.drawsBackground = false

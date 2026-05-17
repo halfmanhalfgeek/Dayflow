@@ -38,8 +38,8 @@ enum SidebarIcon: CaseIterable {
 
   var systemNameFallback: String? {
     switch self {
-    case .bug: return "exclamationmark.bubble"
-    case .settings: return "gearshape"
+    case .bug: return "exclamationmark.bubble.fill"
+    case .settings: return "gearshape.fill"
     default: return nil
     }
   }
@@ -153,7 +153,7 @@ struct SidebarIconButton: View {
         .frame(width: SidebarMetrics.iconContainerSize, height: SidebarMetrics.iconContainerSize)
 
         Text(icon.displayName)
-          .font(.custom("Nunito", size: SidebarMetrics.labelFontSize))
+          .font(.custom("Figtree", size: SidebarMetrics.labelFontSize))
           .lineLimit(1)
           .minimumScaleFactor(0.75)
           .foregroundColor(
