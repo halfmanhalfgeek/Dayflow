@@ -58,6 +58,15 @@ enum WhatsNewTaskOption: String, CaseIterable, Identifiable {
   }
 }
 
+enum WhatsNewProInterestOption: String, CaseIterable, Identifiable {
+  case definitely = "Yes, definitely"
+  case probably = "Probably"
+  case maybe = "Maybe, if the quality is clearly better"
+  case no = "No"
+
+  var id: String { rawValue }
+}
+
 // MARK: - What's New Configuration
 
 enum WhatsNewConfiguration {
@@ -141,7 +150,15 @@ struct WhatsNewView: View {
   @AppStorage("whatsNewTaskOptionsSubmittedVersion") private var submittedTaskOptionsVersion:
     String = ""
   @State private var selectedTaskOptionIDs: Set<String> = []
+  @AppStorage("whatsNewProInterestSubmittedVersion") private var submittedProInterestVersion:
+    String = ""
+  @AppStorage("whatsNewProPriceSubmittedVersion") private var submittedProPriceVersion: String =
+    ""
+  @State private var selectedProInterestOptionID = ""
+  @State private var proPriceResponse = ""
   @State private var releaseSurveyResponseID = ""
+  @State private var isSubmittingProInterest = false
+  @State private var isSubmittingProPrice = false
   @State private var isSubmittingTaskOptions = false
   @State private var surveyErrorText: String?
   @State private var didHydrateSurveyState = false
