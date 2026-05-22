@@ -32,28 +32,21 @@ struct ReleaseNote: Identifiable {
   }
 }
 
-enum WhatsNewTaskOption: String, CaseIterable, Identifiable {
-  case manualPlan = "manual_plan"
-  case importedTasks = "imported_tasks"
-  case progressReview = "progress_review"
-  case tomorrowPriorities = "tomorrow_priorities"
-  case timeTrackingOnly = "time_tracking_only"
+enum WhatsNewGoalHelpfulness: String, CaseIterable, Identifiable {
+  case helpful
+  case notSureYet = "not_sure_yet"
+  case notHelpful = "not_helpful"
 
   var id: String { rawValue }
 
   var title: String {
     switch self {
-    case .manualPlan:
-      return
-        "Let me write down what I want to get done, then automatically track progress from my day"
-    case .importedTasks:
-      return "Pull tasks from tools I already use, like Linear, Notion, Todoist, or my calendar"
-    case .progressReview:
-      return "Show me which planned tasks I actually made progress on"
-    case .tomorrowPriorities:
-      return "Carry unfinished work into tomorrow's priorities"
-    case .timeTrackingOnly:
-      return "Nothing; I want Dayflow to track my time, not manage my tasks"
+    case .helpful:
+      return "Helpful"
+    case .notSureYet:
+      return "Not sure yet"
+    case .notHelpful:
+      return "Not helpful"
     }
   }
 }
@@ -73,18 +66,17 @@ enum WhatsNewConfiguration {
   private static let seenKey = "lastSeenWhatsNewVersion"
 
   /// Override with the specific release number you want to show.
-  private static let versionOverride: String? = "1.11.0"
+  private static let versionOverride: String? = "1.12.0"
 
   /// Update this content before shipping each release. Return nil to disable the modal entirely.
   static var configuredRelease: ReleaseNote? {
     ReleaseNote(
       version: targetVersion,
-      title: "Set goals for your day",
+      title: "New Weekly View Now Available",
       highlights: [
-        "Dayflow is evolving from helping you understand your time to helping you improve how you spend it.",
-        "We're starting with daily focus targets: choose what counts as focus, set a distraction limit, and track your progress as the day unfolds.",
-        "Dayflow also has a cleaner visual system, with more readable text and a calmer, more consistent feel throughout the app.",
-        "Daily goal reminders can be turned off anytime in Settings.",
+        "We're experimenting with a new Weekly view that helps you understand your time at a higher level.",
+        "We haven't tested it with a huge variety of data, so please send in reports if something looks weird or off.",
+        "Lastly, it would be immensely helpful if you could offer some feedback on the new goals feature.",
       ],
       previewIntro: nil,
       previewImageNames: [],
@@ -147,24 +139,17 @@ struct WhatsNewView: View {
   let onDismiss: () -> Void
 
   @Environment(\.openURL) private var openURL
-  @AppStorage("whatsNewTaskOptionsSubmittedVersion") private var submittedTaskOptionsVersion:
-    String = ""
-  @State private var selectedTaskOptionIDs: Set<String> = []
-  @AppStorage("whatsNewProInterestSubmittedVersion") private var submittedProInterestVersion:
-    String = ""
-  @AppStorage("whatsNewProPriceSubmittedVersion") private var submittedProPriceVersion: String =
+  @AppStorage("whatsNewGoalSurveySubmittedVersion") private var submittedGoalSurveyVersion: String =
     ""
-  @State private var selectedProInterestOptionID = ""
-  @State private var proPriceResponse = ""
+  @State private var selectedGoalHelpfulness: WhatsNewGoalHelpfulness?
+  @State private var goalImprovementText = ""
   @State private var releaseSurveyResponseID = ""
-  @State private var isSubmittingProInterest = false
-  @State private var isSubmittingProPrice = false
-  @State private var isSubmittingTaskOptions = false
+  @State private var isSubmittingGoalSurvey = false
   @State private var surveyErrorText: String?
   @State private var didHydrateSurveyState = false
 
   private let bottomAnchorID = "whats_new_bottom_anchor"
-  private let releaseSurveyKey = "task_planning"
+  private let releaseSurveyKey = "goal_feedback"
 
   var body: some View {
     ScrollView {
@@ -285,88 +270,46 @@ struct WhatsNewView: View {
 
   private var surveySection: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Text(
-        "We're exploring a Dayflow Pro plan that handles the AI side for you: no setup, fewer rate-limit headaches, and maximum access to the strongest models we can support."
-      )
-      .font(.custom("Figtree", size: 15))
-      .fontWeight(.semibold)
-      .foregroundColor(.black.opacity(0.85))
-      .fixedSize(horizontal: false, vertical: true)
+      Text("Has setting a daily goal been helpful?")
+        .font(.custom("Figtree", size: 15))
+        .fontWeight(.semibold)
+        .foregroundColor(.black.opacity(0.85))
+        .fixedSize(horizontal: false, vertical: true)
 
       Text(
-        "Frontier AI models are expensive to run, so we're trying to understand what kind of Pro plan would feel genuinely worth it."
+        "A quick answer helps shape where goals go next."
       )
       .font(.custom("Figtree", size: 13))
       .foregroundColor(.black.opacity(0.62))
       .fixedSize(horizontal: false, vertical: true)
 
-      Text(
-        "Would you pay for a Dayflow Pro plan that handles everything and gives you the best available intelligence without rate-limit headaches?"
-      )
-      .font(.custom("Figtree", size: 14))
-      .fontWeight(.semibold)
-      .foregroundColor(.black.opacity(0.82))
-      .fixedSize(horizontal: false, vertical: true)
-
-      VStack(spacing: 10) {
-        ForEach(WhatsNewProInterestOption.allCases) { option in
-          proInterestOptionRow(option)
+      HStack(spacing: 10) {
+        ForEach(WhatsNewGoalHelpfulness.allCases) { option in
+          goalHelpfulnessButton(option)
         }
       }
 
       VStack(alignment: .leading, spacing: 8) {
-        Text(
-          "At what monthly price would Dayflow Pro start to feel expensive, but you'd still buy it?"
-        )
-        .font(.custom("Figtree", size: 14))
-        .fontWeight(.semibold)
-        .foregroundColor(.black.opacity(0.82))
+        Text("What would make goals better?")
+          .font(.custom("Figtree", size: 15))
+          .fontWeight(.semibold)
+          .foregroundColor(.black.opacity(0.85))
 
-        ZStack {
+        WhatsNewSurveyTextEditor(
+          text: $goalImprovementText,
+          placeholder: "More control, better reminders, clearer progress, something else..."
+        )
+        .frame(minHeight: 78)
+        .background(
           RoundedRectangle(cornerRadius: 10, style: .continuous)
             .fill(Color.white)
-
-          WhatsNewSurveyTextEditor(
-            text: $proPriceResponse,
-            placeholder: "",
-            isEditable: !hasSubmittedProPrice
-          )
-          .frame(height: 64)
-          .onChange(of: proPriceResponse) {
-            persistProPriceResponse()
-          }
-          .environment(\.colorScheme, .light)
-          .preferredColorScheme(.light)
-        }
+        )
         .overlay(
           RoundedRectangle(cornerRadius: 10, style: .continuous)
             .stroke(Color.black.opacity(0.1), lineWidth: 1)
         )
-        .opacity(hasSubmittedProPrice ? 0.72 : 1)
       }
-
-      HStack {
-        Spacer()
-        DayflowSurfaceButton(
-          action: submitProPrice,
-          content: {
-            Text(isSubmittingProPrice ? "Submitting..." : "Submit")
-              .font(.custom("Figtree", size: 15))
-              .fontWeight(.semibold)
-          },
-          background: canSubmitProPrice
-            ? Color(red: 0.25, green: 0.17, blue: 0) : Color.black.opacity(0.08),
-          foreground: .white.opacity(canSubmitProPrice ? 1 : 0.7),
-          borderColor: .clear,
-          cornerRadius: 8,
-          horizontalPadding: 34,
-          verticalPadding: 12,
-          minWidth: 160,
-          showOverlayStroke: true
-        )
-        .disabled(!canSubmitProPrice)
-        .opacity(canSubmitProPrice ? 1 : 0.8)
-      }
+      .padding(.top, 4)
 
       if let surveyErrorText {
         Text(surveyErrorText)
@@ -375,10 +318,35 @@ struct WhatsNewView: View {
           .fixedSize(horizontal: false, vertical: true)
       }
 
-      if hasSubmittedProPrice {
-        Label("Thanks for sharing your interest.", systemImage: "checkmark.circle.fill")
-          .font(.custom("Figtree", size: 14))
-          .foregroundColor(Color(red: 0.25, green: 0.17, blue: 0))
+      HStack(spacing: 12) {
+        DayflowSurfaceButton(
+          action: submitGoalSurveyFromButton,
+          content: {
+            HStack(spacing: 8) {
+              Image(systemName: "paperplane.fill")
+                .font(.system(size: 12, weight: .semibold))
+              Text(isSubmittingGoalSurvey ? "Saving..." : "Send feedback")
+                .font(.custom("Figtree", size: 14))
+                .fontWeight(.semibold)
+            }
+          },
+          background: Color(red: 0.25, green: 0.17, blue: 0),
+          foreground: .white,
+          borderColor: .clear,
+          cornerRadius: 8,
+          horizontalPadding: 14,
+          verticalPadding: 9,
+          showOverlayStroke: true
+        )
+        .disabled(isSubmittingGoalSurvey)
+        .opacity(isSubmittingGoalSurvey ? 0.72 : 1)
+        .pointingHandCursor()
+
+        if hasSubmittedGoalSurvey {
+          Label("Saved.", systemImage: "checkmark.circle.fill")
+            .font(.custom("Figtree", size: 14))
+            .foregroundColor(Color(red: 0.25, green: 0.17, blue: 0))
+        }
       }
     }
     .padding(.top, 10)
@@ -386,37 +354,22 @@ struct WhatsNewView: View {
     .preferredColorScheme(.light)
   }
 
-  private func proInterestOptionRow(_ option: WhatsNewProInterestOption) -> some View {
-    let isSelected = selectedProInterestOption == option
+  private func goalHelpfulnessButton(_ option: WhatsNewGoalHelpfulness) -> some View {
+    let isSelected = selectedGoalHelpfulness == option
 
     return Button(action: {
-      selectProInterestOption(option)
+      selectGoalHelpfulness(option)
     }) {
-      HStack(spacing: 12) {
-        ZStack {
-          Circle()
-            .stroke(
-              isSelected ? Color(red: 0.25, green: 0.17, blue: 0) : Color.black.opacity(0.16),
-              lineWidth: 1.5
-            )
-            .frame(width: 18, height: 18)
-
-          if isSelected {
-            Circle()
-              .fill(Color(red: 0.25, green: 0.17, blue: 0))
-              .frame(width: 8, height: 8)
-          }
-        }
-
-        Text(option.rawValue)
+      HStack(spacing: 8) {
+        Text(option.title)
           .font(.custom("Figtree", size: 14))
+          .fontWeight(isSelected ? .semibold : .regular)
           .foregroundColor(.black.opacity(0.82))
           .fixedSize(horizontal: false, vertical: true)
-
-        Spacer(minLength: 0)
       }
-      .padding(.horizontal, 14)
-      .padding(.vertical, 12)
+      .frame(maxWidth: .infinity)
+      .padding(.horizontal, 12)
+      .padding(.vertical, 10)
       .background(
         RoundedRectangle(cornerRadius: 10, style: .continuous)
           .fill(
@@ -436,8 +389,8 @@ struct WhatsNewView: View {
       )
     }
     .buttonStyle(.plain)
+    .disabled(isSubmittingGoalSurvey)
     .pointingHandCursor()
-    .disabled(isSubmittingProInterest)
   }
 
   private func ctaSection(_ cta: ReleaseNoteCTA) -> some View {
@@ -489,90 +442,66 @@ struct WhatsNewView: View {
     openURL(url)
   }
 
-  private var hasSubmittedProInterest: Bool {
-    submittedProInterestVersion == releaseNote.version
+  private var hasSubmittedGoalSurvey: Bool {
+    submittedGoalSurveyVersion == releaseNote.version
   }
 
-  private var hasSubmittedProPrice: Bool {
-    submittedProPriceVersion == releaseNote.version
-  }
-
-  private var selectedProInterestOption: WhatsNewProInterestOption? {
-    WhatsNewProInterestOption(rawValue: selectedProInterestOptionID)
-  }
-
-  private var proPriceResponseTrimmed: String {
-    proPriceResponse.trimmingCharacters(in: .whitespacesAndNewlines)
-  }
-
-  private var canSubmitProPrice: Bool {
-    hasSubmittedProInterest && !hasSubmittedProPrice && !isSubmittingProPrice
-      && !proPriceResponseTrimmed.isEmpty
-  }
-
-  private func selectProInterestOption(_ option: WhatsNewProInterestOption) {
-    guard !isSubmittingProInterest else { return }
+  private func selectGoalHelpfulness(_ option: WhatsNewGoalHelpfulness) {
+    let previousSelection = selectedGoalHelpfulness
+    selectedGoalHelpfulness = option
+    persistGoalSurveyState()
     surveyErrorText = nil
 
     Task {
-      if await submitReleaseSurvey(proInterest: option.rawValue, proPrice: nil) {
-        selectedProInterestOptionID = option.rawValue
-        persistSelectedProInterestOption()
-        submittedProInterestVersion = releaseNote.version
+      if await submitReleaseSurvey() {
+        submittedGoalSurveyVersion = releaseNote.version
+      } else {
+        selectedGoalHelpfulness = previousSelection
+        persistGoalSurveyState()
       }
     }
   }
 
-  private func submitProPrice() {
-    guard hasSubmittedProInterest else { return }
-    guard !hasSubmittedProPrice else { return }
-
-    let proPrice = String(proPriceResponseTrimmed.prefix(200))
-    guard !proPrice.isEmpty else { return }
-
+  private func submitGoalSurveyFromButton() {
+    persistGoalSurveyState()
     surveyErrorText = nil
 
     Task {
-      if await submitReleaseSurvey(
-        proInterest: selectedProInterestOption?.rawValue,
-        proPrice: proPrice
-      ) {
-        submittedProPriceVersion = releaseNote.version
-        proPriceResponse = proPrice
-        persistProPriceResponse()
+      if await submitReleaseSurvey() {
+        submittedGoalSurveyVersion = releaseNote.version
       }
     }
   }
 
-  private func persistSelectedProInterestOption() {
-    UserDefaults.standard.set(
-      selectedProInterestOptionID,
-      forKey: selectedProInterestOptionStorageKey
-    )
-  }
+  private func persistGoalSurveyState() {
+    if let selectedGoalHelpfulness {
+      UserDefaults.standard.set(
+        selectedGoalHelpfulness.rawValue, forKey: selectedHelpfulnessStorageKey)
+    } else {
+      UserDefaults.standard.removeObject(forKey: selectedHelpfulnessStorageKey)
+    }
 
-  private func persistProPriceResponse() {
-    UserDefaults.standard.set(proPriceResponse, forKey: proPriceResponseStorageKey)
+    UserDefaults.standard.set(goalImprovementText, forKey: goalImprovementStorageKey)
   }
 
   private func hydrateSurveyStateIfNeeded() {
-    selectedProInterestOptionID =
-      UserDefaults.standard.string(forKey: selectedProInterestOptionStorageKey) ?? ""
-    proPriceResponse =
-      UserDefaults.standard.string(forKey: proPriceResponseStorageKey) ?? ""
+    if let storedHelpfulness = UserDefaults.standard.string(forKey: selectedHelpfulnessStorageKey) {
+      selectedGoalHelpfulness = WhatsNewGoalHelpfulness(rawValue: storedHelpfulness)
+    }
+    goalImprovementText = UserDefaults.standard.string(forKey: goalImprovementStorageKey) ?? ""
     releaseSurveyResponseID = loadReleaseSurveyResponseID()
   }
 
-  private var selectedProInterestOptionStorageKey: String {
-    "whatsNewProInterestOption_\(releaseNote.version)"
+  private var selectedHelpfulnessStorageKey: String {
+    "whatsNewGoalHelpfulness_\(releaseSurveyKey)_\(releaseNote.version)"
   }
 
-  private var proPriceResponseStorageKey: String {
-    "whatsNewProPriceResponse_\(releaseNote.version)"
+  private var goalImprovementStorageKey: String {
+    "whatsNewGoalImprovement_\(releaseSurveyKey)_\(releaseNote.version)"
   }
 
   private var releaseSurveyResponseIDStorageKey: String {
-    "whatsNewReleaseSurveyResponseID_\(releaseNote.version)"
+    "whatsNewReleaseSurveyResponseID_\(releaseSurveyKey)_\(releaseNote.version)"
   }
 
   private func loadReleaseSurveyResponseID() -> String {
@@ -588,20 +517,11 @@ struct WhatsNewView: View {
     return generated
   }
 
-  private func submitReleaseSurvey(proInterest: String?, proPrice: String?) async -> Bool {
-    let submittingPrice = proPrice != nil
-    if submittingPrice {
-      isSubmittingProPrice = true
-    } else {
-      isSubmittingProInterest = true
-    }
+  private func submitReleaseSurvey() async -> Bool {
+    isSubmittingGoalSurvey = true
 
     defer {
-      if submittingPrice {
-        isSubmittingProPrice = false
-      } else {
-        isSubmittingProInterest = false
-      }
+      isSubmittingGoalSurvey = false
     }
 
     do {
@@ -609,13 +529,14 @@ struct WhatsNewView: View {
         releaseSurveyResponseID.isEmpty
         ? loadReleaseSurveyResponseID() : releaseSurveyResponseID
       releaseSurveyResponseID = responseID
+      let trimmedImprovement = goalImprovementText.trimmingCharacters(in: .whitespacesAndNewlines)
       try await ReleaseSurveyClient.submit(
         ReleaseSurveyPayload(
           responseID: responseID,
           surveyKey: releaseSurveyKey,
           version: releaseNote.version,
-          proInterest: proInterest,
-          proPrice: proPrice,
+          proInterest: selectedGoalHelpfulness?.rawValue,
+          proPrice: trimmedImprovement.isEmpty ? nil : trimmedImprovement,
           appVersion: appVersion,
           analyticsOptIn: AnalyticsService.shared.isOptedIn,
           providerLabel: currentProviderLabel

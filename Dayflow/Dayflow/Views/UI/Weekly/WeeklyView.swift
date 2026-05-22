@@ -12,6 +12,7 @@ struct WeeklyView: View {
   @State private var weekRange: WeeklyDateRange
   @State private var dashboardSnapshot: WeeklyDashboardSnapshot
   @State private var isLoading = true
+  @State private var selectedWeekRecordedMinutes: Int?
   @State private var weeklyAccessProgress: WeeklyAccessProgressSnapshot
   @State private var notificationState: WeeklyAccessNotificationState = .idle
 
@@ -67,6 +68,7 @@ struct WeeklyView: View {
     .animation(.easeInOut(duration: 0.22), value: isWeeklyAccessUnlocked)
     .onAppear {
       refreshWeeklyAccessState()
+      selectDefaultWeekOnEntry()
     }
     .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { _ in
       refreshWeeklyAccessState()
@@ -89,77 +91,65 @@ struct WeeklyView: View {
             onPrevious: showPreviousWeek,
             onNext: showNextWeek
           )
-          .overlay(alignment: .trailing) {
-            WeeklyAccessLockButton(action: lockWeeklyAccess)
-              .frame(width: layout.contentWidth, alignment: .trailing)
-              .frame(maxWidth: .infinity, alignment: .center)
-          }
           .padding(.bottom, layout.headerBottomPadding)
 
           VStack(spacing: layout.sectionSpacing) {
-            topSummarySection(layout: layout)
-
-            WeeklyExportableGraphic(
-              layout: layout,
-              title: "Time distribution",
-              fileName: exportFileName("time-distribution"),
-              designHeight: 339,
-              watermarkPlacement: .bottomTrailing
-            ) {
-              WeeklyOverviewSection(snapshot: dashboardSnapshot.overview)
-            }
-
-            WeeklyExportableGraphic(
-              layout: layout,
-              title: "Suggestions",
-              fileName: exportFileName("suggestions"),
-              designHeight: 328,
-              watermarkPlacement: .topTrailing
-            ) {
-              WeeklySuggestionsSection(snapshot: dashboardSnapshot.suggestions)
-            }
-
-            WeeklyExportableGraphic(
-              layout: layout,
-              title: "Focus breakdown",
-              fileName: exportFileName("focus-breakdown"),
-              designHeight: 549,
-              watermarkPlacement: .bottomTrailing
-            ) {
-              WeeklyTreemapSection(snapshot: dashboardSnapshot.treemap)
-            }
-
-            WeeklyExportableGraphic(
-              layout: layout,
-              title: "Application flow",
-              fileName: exportFileName("application-flow"),
-              designHeight: WeeklyAdaptiveLayout.sankeyHeight,
-              watermarkPlacement: .bottomLeading
-            ) {
-              WeeklySankeySection(
-                snapshot: dashboardSnapshot.sankey,
-                showsControls: false
+            if shouldShowWeeklyDataGate {
+              WeeklyDataRequirementView(
+                recordedMinutes: selectedWeekRecordedMinutes ?? 0,
+                targetMinutes: Self.weeklyDataRequirementMinutes
               )
-            }
+              .frame(width: layout.contentWidth, height: WeeklyAdaptiveLayout.dataGateHeight)
+            } else {
+              topSummarySection(layout: layout)
 
-            WeeklyExportableGraphic(
-              layout: layout,
-              title: "Focus heatmap",
-              fileName: exportFileName("focus-heatmap"),
-              designHeight: 238,
-              watermarkPlacement: .bottomTrailing
-            ) {
-              WeeklyFocusHeatmapSection(snapshot: dashboardSnapshot.heatmap)
-            }
+              WeeklyExportableGraphic(
+                layout: layout,
+                title: "Weekly workflow",
+                fileName: exportFileName("weekly-workflow"),
+                displayHeight: WeeklyAdaptiveLayout.workflowHeight,
+                exportHeight: WeeklyAdaptiveLayout.workflowHeight,
+                watermarkPlacement: .bottomTrailing
+              ) { width in
+                WeeklyWorkflowSection(snapshot: dashboardSnapshot.workflow, width: width)
+              }
 
-            WeeklyExportableGraphic(
-              layout: layout,
-              title: "Context charts",
-              fileName: exportFileName("context-charts"),
-              designHeight: 427,
-              watermarkPlacement: .bottomTrailing
-            ) {
-              WeeklyContextChartsSection(snapshot: dashboardSnapshot.contextCharts)
+              WeeklyExportableGraphic(
+                layout: layout,
+                title: "Focus heatmap",
+                fileName: exportFileName("focus-heatmap"),
+                displayHeight: WeeklyAdaptiveLayout.heatmapHeight,
+                exportHeight: WeeklyAdaptiveLayout.heatmapHeight,
+                watermarkPlacement: .bottomTrailing
+              ) { width in
+                WeeklyFocusHeatmapSection(snapshot: dashboardSnapshot.heatmap, width: width)
+              }
+
+              WeeklyExportableGraphic(
+                layout: layout,
+                title: "Focus breakdown",
+                fileName: exportFileName("focus-breakdown"),
+                displayHeight: WeeklyAdaptiveLayout.treemapHeight,
+                exportHeight: WeeklyAdaptiveLayout.treemapHeight,
+                watermarkPlacement: .bottomTrailing
+              ) { width in
+                WeeklyTreemapSection(snapshot: dashboardSnapshot.treemap, width: width)
+              }
+
+              WeeklyExportableGraphic(
+                layout: layout,
+                title: "Weekly breakdown",
+                fileName: exportFileName("weekly-breakdown"),
+                displayHeight: layout.sankeyHeight,
+                exportHeight: WeeklyAdaptiveLayout.designSankeyHeight,
+                watermarkPlacement: .bottomLeading
+              ) { width in
+                WeeklySankeySection(
+                  snapshot: dashboardSnapshot.sankey,
+                  showsControls: false,
+                  width: width
+                )
+              }
             }
           }
           .frame(width: layout.contentWidth, alignment: .top)
@@ -177,61 +167,64 @@ struct WeeklyView: View {
   private func topSummarySection(layout: WeeklyAdaptiveLayout) -> some View {
     if layout.usesTopRowColumns {
       HStack(alignment: .top, spacing: WeeklyAdaptiveLayout.topRowSpacing) {
-        WeeklyExportableFixedGraphic(
-          availableWidth: WeeklyAdaptiveLayout.donutCardWidth,
-          title: "Weekly distribution",
-          fileName: exportFileName("weekly-distribution"),
-          designWidth: WeeklyAdaptiveLayout.donutCardWidth,
-          designHeight: WeeklyAdaptiveLayout.topRowHeight,
-          watermarkPlacement: .bottomTrailing
-        ) {
-          WeeklyDonutSection(snapshot: dashboardSnapshot.donut, isLoading: isLoading)
-        }
-
-        WeeklyExportableFixedGraphic(
-          availableWidth: WeeklyAdaptiveLayout.highlightsCardWidth,
-          title: "Top highlights",
-          fileName: exportFileName("top-highlights"),
-          designWidth: WeeklyAdaptiveLayout.highlightsCardWidth,
-          designHeight: WeeklyAdaptiveLayout.highlightsCardHeight,
-          watermarkPlacement: .bottomTrailing
-        ) {
-          WeeklyHighlightsSection(snapshot: dashboardSnapshot.highlights)
-        }
+        weeklyDistributionCard(layout: layout, width: layout.donutCardWidth)
+        weeklyContextChartCard(layout: layout, width: layout.contextCardWidth)
       }
-      .frame(
-        width: WeeklyAdaptiveLayout.designContentWidth,
-        height: WeeklyAdaptiveLayout.topRowHeight,
-        alignment: .topLeading
-      )
+      .frame(width: layout.contentWidth, alignment: .topLeading)
     } else {
       VStack(spacing: layout.compactTopRowSpacing) {
-        WeeklyExportableFixedGraphic(
-          availableWidth: layout.contentWidth,
-          title: "Weekly distribution",
-          fileName: exportFileName("weekly-distribution"),
-          designWidth: WeeklyAdaptiveLayout.donutCardWidth,
-          designHeight: WeeklyAdaptiveLayout.topRowHeight,
-          watermarkPlacement: .bottomTrailing
-        ) {
-          WeeklyDonutSection(snapshot: dashboardSnapshot.donut, isLoading: isLoading)
-        }
-        .frame(width: layout.contentWidth, alignment: .center)
-
-        WeeklyExportableFixedGraphic(
-          availableWidth: layout.contentWidth,
-          title: "Top highlights",
-          fileName: exportFileName("top-highlights"),
-          designWidth: WeeklyAdaptiveLayout.highlightsCardWidth,
-          designHeight: WeeklyAdaptiveLayout.highlightsCardHeight,
-          watermarkPlacement: .bottomTrailing
-        ) {
-          WeeklyHighlightsSection(snapshot: dashboardSnapshot.highlights)
-        }
-        .frame(width: layout.contentWidth, alignment: .center)
+        weeklyDistributionCard(layout: layout, width: layout.contentWidth)
+        weeklyContextChartCard(layout: layout, width: layout.contentWidth)
       }
-      .frame(width: layout.contentWidth, alignment: .top)
+      .frame(width: layout.contentWidth, alignment: .topLeading)
     }
+  }
+
+  private func weeklyDistributionCard(
+    layout: WeeklyAdaptiveLayout,
+    width: CGFloat
+  ) -> some View {
+    WeeklyExportableFixedGraphic(
+      availableWidth: width,
+      title: "Weekly distribution",
+      fileName: exportFileName("weekly-distribution"),
+      designWidth: WeeklyAdaptiveLayout.donutCardWidth,
+      designHeight: WeeklyAdaptiveLayout.topRowHeight,
+      watermarkPlacement: .bottomTrailing
+    ) { cardWidth in
+      WeeklyDonutSection(
+        snapshot: dashboardSnapshot.donut,
+        isLoading: isLoading,
+        width: cardWidth
+      )
+    }
+  }
+
+  private func weeklyContextChartCard(
+    layout: WeeklyAdaptiveLayout,
+    width: CGFloat
+  ) -> some View {
+    WeeklyExportableFixedGraphic(
+      availableWidth: width,
+      title: "Context charts",
+      fileName: exportFileName("context-charts"),
+      designWidth: WeeklyAdaptiveLayout.designContentWidth,
+      designHeight: WeeklyAdaptiveLayout.topRowHeight,
+      watermarkPlacement: .bottomTrailing
+    ) { cardWidth in
+      WeeklyContextChartsSection(
+        snapshot: dashboardSnapshot.contextCharts,
+        width: cardWidth
+      )
+    }
+  }
+
+  private static let weeklyDataRequirementMinutes = 15 * 60
+  private static let defaultWeekSearchLimit = 52
+
+  private var shouldShowWeeklyDataGate: Bool {
+    guard let selectedWeekRecordedMinutes else { return false }
+    return selectedWeekRecordedMinutes < Self.weeklyDataRequirementMinutes
   }
 
   private var isWeeklyAccessUnlocked: Bool {
@@ -246,6 +239,41 @@ struct WeeklyView: View {
     guard weeklyAccessProgress.isComplete, !isManuallyLocked else { return }
 
     NotificationService.shared.cancelWeeklyUnlockNotification()
+  }
+
+  private func selectDefaultWeekOnEntry() {
+    guard isWeeklyAccessUnlocked else { return }
+
+    let defaultRange = defaultWeekRangeOnEntry()
+    guard defaultRange != weekRange else { return }
+
+    weekRange = defaultRange
+  }
+
+  private func defaultWeekRangeOnEntry() -> WeeklyDateRange {
+    var fallbackRangeWithData: WeeklyDateRange?
+    var range = WeeklyDateRange.containing(Date())
+
+    for _ in 0..<Self.defaultWeekSearchLimit {
+      let recordedMinutes = Int(
+        StorageManager.shared.fetchTotalMinutesTracked(
+          from: range.weekStart,
+          to: range.weekEnd
+        ).rounded(.down)
+      )
+
+      if recordedMinutes >= Self.weeklyDataRequirementMinutes {
+        return range
+      }
+
+      if fallbackRangeWithData == nil, recordedMinutes > 0 {
+        fallbackRangeWithData = range
+      }
+
+      range = range.shifted(byWeeks: -1)
+    }
+
+    return fallbackRangeWithData ?? WeeklyDateRange.containing(Date())
   }
 
   private func handleWeeklyNotifyAction() {
@@ -338,6 +366,7 @@ struct WeeklyView: View {
     categories: [TimelineCategory]
   ) async {
     isLoading = true
+    selectedWeekRecordedMinutes = nil
 
     let previousRange = range.shifted(byWeeks: -1)
     let cards = StorageManager.shared.fetchTimelineCardsByTimeRange(
@@ -357,50 +386,164 @@ struct WeeklyView: View {
 
     guard range == weekRange else { return }
     dashboardSnapshot = snapshot
+    selectedWeekRecordedMinutes = snapshot.donut.totalMinutes
     isLoading = false
   }
 }
 
-private struct WeeklyAccessLockButton: View {
-  let action: () -> Void
+private struct WeeklyDataRequirementView: View {
+  let recordedMinutes: Int
+  let targetMinutes: Int
+
+  private var progress: Double {
+    guard targetMinutes > 0 else { return 1 }
+    return min(max(Double(recordedMinutes) / Double(targetMinutes), 0), 1)
+  }
+
+  private var recordedTimeText: String {
+    "\(durationText(recordedMinutes)) / \(durationText(targetMinutes))"
+  }
+
+  private var remainingText: String {
+    let remainingMinutes = max(targetMinutes - recordedMinutes, 0)
+    return "\(durationText(remainingMinutes)) more to unlock this week"
+  }
 
   var body: some View {
-    Button(action: action) {
-      Image(systemName: "lock.fill")
-        .font(.system(size: 12, weight: .semibold))
-        .foregroundStyle(Color(hex: "B46531"))
-        .frame(width: 32, height: 32)
-        .background(
-          Circle()
-            .fill(Color.white.opacity(0.92))
-        )
+    ZStack {
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .fill(Color(hex: "FFF7EF"))
         .overlay(
-          Circle()
-            .stroke(Color(hex: "EBD8C8"), lineWidth: 1)
+          RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .stroke(Color.white, lineWidth: 1)
         )
-        .shadow(color: Color.black.opacity(0.06), radius: 5, y: 2)
+        .shadow(color: Color(hex: "80450D").opacity(0.12), radius: 12, x: 0, y: 2)
+
+      VStack(spacing: 18) {
+        VStack(spacing: 5) {
+          Text("Keep recording to unlock this week")
+            .font(.custom("InstrumentSerif-Regular", size: 24))
+            .foregroundStyle(Color(hex: "333333"))
+
+          Text("Weekly insights need at least 15 hours of recorded activity for the selected week.")
+            .font(.custom("Figtree-Regular", size: 14))
+            .foregroundStyle(Color(hex: "796E64"))
+            .multilineTextAlignment(.center)
+            .lineLimit(2)
+        }
+
+        WeeklyDataRequirementPill(text: recordedTimeText)
+
+        WeeklyDataRequirementProgressBar(progress: progress)
+
+        Text(remainingText)
+          .font(.custom("Figtree-Medium", size: 13))
+          .foregroundStyle(Color(hex: "8A7768"))
+      }
+      .padding(.horizontal, 28)
+      .frame(maxWidth: 540)
     }
-    .buttonStyle(.plain)
-    .help("Lock Weekly")
-    .accessibilityLabel("Lock Weekly")
-    .hoverScaleEffect(scale: 1.03)
-    .pointingHandCursorOnHover(reassertOnPressEnd: true)
+  }
+
+  private func durationText(_ minutes: Int) -> String {
+    let hours = minutes / 60
+    let remainingMinutes = minutes % 60
+
+    if minutes <= 0 {
+      return "0h"
+    }
+
+    if hours == 0 {
+      return "\(remainingMinutes)m"
+    }
+
+    if remainingMinutes == 0 {
+      return "\(hours)h"
+    }
+
+    return "\(hours)h \(remainingMinutes)m"
+  }
+}
+
+private struct WeeklyDataRequirementPill: View {
+  let text: String
+
+  var body: some View {
+    Text(text)
+      .font(.custom("InstrumentSerif-Regular", size: 22))
+      .foregroundStyle(Color(hex: "FF7856"))
+      .lineLimit(1)
+      .minimumScaleFactor(0.75)
+      .padding(.horizontal, 24)
+      .frame(height: 58)
+      .background(
+        Capsule(style: .continuous)
+          .fill(Color(hex: "FFEBD6"))
+      )
+      .overlay(
+        Capsule(style: .continuous)
+          .stroke(Color(hex: "FF8904").opacity(0.5), lineWidth: 1)
+      )
+      .shadow(color: Color(hex: "FDE7D1"), radius: 8, x: 0, y: 2)
+  }
+}
+
+private struct WeeklyDataRequirementProgressBar: View {
+  let progress: Double
+
+  var body: some View {
+    GeometryReader { geometry in
+      let clampedProgress = min(max(progress, 0), 1)
+      let filledWidth = geometry.size.width * clampedProgress
+
+      ZStack(alignment: .leading) {
+        Capsule(style: .continuous)
+          .fill(Color(hex: "EAE0DD"))
+
+        LinearGradient(
+          colors: [Color(hex: "C6D9FF"), Color(hex: "FF9A78")],
+          startPoint: .leading,
+          endPoint: .trailing
+        )
+        .frame(width: filledWidth)
+        .clipShape(Capsule(style: .continuous))
+
+        Circle()
+          .fill(Color(hex: "FF6E00"))
+          .frame(width: 24, height: 24)
+          .overlay(
+            Image("DayflowLogo")
+              .renderingMode(.template)
+              .resizable()
+              .scaledToFit()
+              .foregroundStyle(Color.white)
+              .frame(width: 13.5, height: 13.5)
+          )
+          .shadow(color: Color(hex: "FF6E00").opacity(0.18), radius: 5, x: 0, y: 2)
+          .offset(x: max(0, min(geometry.size.width - 24, filledWidth - 12)))
+      }
+    }
+    .frame(width: 420, height: 24)
   }
 }
 
 private struct WeeklyAdaptiveLayout {
   static let designContentWidth: CGFloat = 958
   static let donutCardWidth: CGFloat = 461
-  static let highlightsCardWidth: CGFloat = 470
-  static let highlightsCardHeight: CGFloat = 298
   static let topRowHeight: CGFloat = 300
   static let topRowSpacing: CGFloat = 27
-  static let sankeyHeight: CGFloat = designContentWidth * 933 / 1748
+  static let workflowHeight: CGFloat = 292
+  static let suggestionsHeight: CGFloat = 328
+  static let treemapHeight: CGFloat = 549
+  static let heatmapHeight: CGFloat = 238
+  static let dataGateHeight: CGFloat = 360
+  static let designSankeyHeight: CGFloat = designContentWidth * 933 / 1748
+  static let maximumContentWidth: CGFloat = 1500
 
   let panelWidth: CGFloat
 
   var horizontalPadding: CGFloat {
-    min(80, max(24, panelWidth * 0.05))
+    min(56, max(24, panelWidth * 0.03))
   }
 
   private var rawContentWidth: CGFloat {
@@ -408,11 +551,20 @@ private struct WeeklyAdaptiveLayout {
   }
 
   var contentWidth: CGFloat {
-    min(Self.designContentWidth, rawContentWidth)
+    min(Self.maximumContentWidth, rawContentWidth)
   }
 
-  var shrinkScale: CGFloat {
-    min(1, contentWidth / Self.designContentWidth)
+  var donutCardWidth: CGFloat {
+    let idealWidth = floor((contentWidth - Self.topRowSpacing) * 0.44)
+    return min(620, max(Self.donutCardWidth, idealWidth))
+  }
+
+  var contextCardWidth: CGFloat {
+    max(1, contentWidth - Self.topRowSpacing - donutCardWidth)
+  }
+
+  var sankeyHeight: CGFloat {
+    contentWidth * 933 / 1748
   }
 
   var sectionSpacing: CGFloat {
@@ -444,60 +596,41 @@ private struct WeeklyExportableGraphic<Content: View>: View {
   let layout: WeeklyAdaptiveLayout
   let title: String
   let fileName: String
-  let designHeight: CGFloat
+  let displayHeight: CGFloat
+  let exportHeight: CGFloat
   let watermarkPlacement: WeeklyExportWatermarkPlacement
-  let content: () -> Content
+  let content: (CGFloat) -> Content
 
   init(
     layout: WeeklyAdaptiveLayout,
     title: String,
     fileName: String,
-    designHeight: CGFloat,
+    displayHeight: CGFloat,
+    exportHeight: CGFloat,
     watermarkPlacement: WeeklyExportWatermarkPlacement,
-    @ViewBuilder content: @escaping () -> Content
+    @ViewBuilder content: @escaping (CGFloat) -> Content
   ) {
     self.layout = layout
     self.title = title
     self.fileName = fileName
-    self.designHeight = designHeight
+    self.displayHeight = displayHeight
+    self.exportHeight = exportHeight
     self.watermarkPlacement = watermarkPlacement
     self.content = content
   }
 
   var body: some View {
-    let scale = layout.shrinkScale
-
-    ZStack(alignment: .topTrailing) {
-      content()
-        .frame(
-          width: WeeklyAdaptiveLayout.designContentWidth,
-          height: designHeight,
-          alignment: .topLeading
-        )
-        .scaleEffect(scale, anchor: .topLeading)
-        .frame(
-          width: WeeklyAdaptiveLayout.designContentWidth * scale,
-          height: designHeight * scale,
-          alignment: .topLeading
-        )
-
-      WeeklyGraphicDownloadButton(title: title) {
-        WeeklyGraphicExporter.savePNG(
-          fileName: fileName,
-          size: CGSize(width: WeeklyAdaptiveLayout.designContentWidth, height: designHeight),
-          watermarkPlacement: watermarkPlacement
-        ) {
-          content()
-        }
-      }
-      .padding(.top, 10)
-      .padding(.trailing, 10)
-    }
-    .frame(
-      width: layout.contentWidth,
-      height: designHeight * scale,
-      alignment: .topLeading
-    )
+    content(layout.contentWidth)
+      .frame(
+        width: layout.contentWidth,
+        height: displayHeight,
+        alignment: .topLeading
+      )
+      .frame(
+        width: layout.contentWidth,
+        height: displayHeight,
+        alignment: .topLeading
+      )
   }
 }
 
@@ -508,7 +641,7 @@ private struct WeeklyExportableFixedGraphic<Content: View>: View {
   let designWidth: CGFloat
   let designHeight: CGFloat
   let watermarkPlacement: WeeklyExportWatermarkPlacement
-  let content: () -> Content
+  let content: (CGFloat) -> Content
 
   init(
     availableWidth: CGFloat,
@@ -517,7 +650,7 @@ private struct WeeklyExportableFixedGraphic<Content: View>: View {
     designWidth: CGFloat,
     designHeight: CGFloat,
     watermarkPlacement: WeeklyExportWatermarkPlacement,
-    @ViewBuilder content: @escaping () -> Content
+    @ViewBuilder content: @escaping (CGFloat) -> Content
   ) {
     self.availableWidth = availableWidth
     self.title = title
@@ -528,38 +661,14 @@ private struct WeeklyExportableFixedGraphic<Content: View>: View {
     self.content = content
   }
 
-  private var scale: CGFloat {
-    min(1, max(1, availableWidth) / designWidth)
-  }
-
   var body: some View {
-    ZStack(alignment: .topTrailing) {
-      content()
-        .frame(width: designWidth, height: designHeight, alignment: .topLeading)
-        .scaleEffect(scale, anchor: .topLeading)
-        .frame(
-          width: designWidth * scale,
-          height: designHeight * scale,
-          alignment: .topLeading
-        )
-
-      WeeklyGraphicDownloadButton(title: title) {
-        WeeklyGraphicExporter.savePNG(
-          fileName: fileName,
-          size: CGSize(width: designWidth, height: designHeight),
-          watermarkPlacement: watermarkPlacement
-        ) {
-          content()
-        }
-      }
-      .padding(.top, 10)
-      .padding(.trailing, 10)
-    }
-    .frame(
-      width: designWidth * scale,
-      height: designHeight * scale,
-      alignment: .topLeading
-    )
+    content(availableWidth)
+      .frame(width: availableWidth, height: designHeight, alignment: .topLeading)
+      .frame(
+        width: availableWidth,
+        height: designHeight,
+        alignment: .topLeading
+      )
   }
 }
 
@@ -569,19 +678,11 @@ private struct WeeklyGraphicDownloadButton: View {
 
   var body: some View {
     Button(action: action) {
-      Image(systemName: "arrow.down.to.line")
-        .font(.system(size: 12, weight: .semibold))
+      Image(systemName: "arrow.down.circle")
+        .font(.system(size: 20, weight: .regular))
         .foregroundStyle(Color(hex: "B46531"))
-        .frame(width: 28, height: 28)
-        .background(
-          Circle()
-            .fill(Color.white.opacity(0.92))
-        )
-        .overlay(
-          Circle()
-            .stroke(Color(hex: "EBE6E3"), lineWidth: 1)
-        )
-        .shadow(color: Color.black.opacity(0.06), radius: 5, y: 2)
+        .frame(width: 30, height: 30)
+        .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .help("Download \(title) as a full-resolution PNG")

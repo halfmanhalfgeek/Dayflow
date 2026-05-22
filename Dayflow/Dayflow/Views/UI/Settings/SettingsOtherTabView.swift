@@ -176,6 +176,7 @@ struct SettingsOtherTabView: View {
       }
     }
   }
+
   // MARK: - Output language override
 
   private var outputLanguageSection: some View {
