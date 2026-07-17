@@ -1,10 +1,14 @@
 import AppKit
 import Foundation
 
-extension ChatCLIProvider {
-  // MARK: - Prompt builders
+extension ClaudeProvider {
+  // MARK: - Claude prompt builders
 
-  func buildCardsPrompt(observations: [Observation], context: ActivityGenerationContext)
+  func buildCardsPrompt(
+    observations: [Observation],
+    context: ActivityGenerationContext,
+    overrides: ActivityCardPromptOverrides? = nil
+  )
     -> String
   {
     // Use explicit string concatenation to avoid GRDB SQL interpolation pollution
@@ -18,9 +22,11 @@ extension ChatCLIProvider {
     encoder.outputFormatting = .prettyPrinted
     let existingCardsData = try? encoder.encode(context.existingCards)
     let existingCardsJSON = existingCardsData.flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
-    let promptSections = ChatCLIPromptSections(overrides: ChatCLIPromptPreferences.load())
+    let promptSections = ClaudePromptSections(
+      overrides: overrides ?? ClaudePromptPreferences.load()
+    )
 
-    // Build prompt with explicit concatenation to avoid GRDB SQL interpolation pollution
+    // Build prompt with explicit string concatenation to avoid GRDB SQL interpolation pollution
     let categoriesSectionText = categoriesSection(from: context.categories)
 
     let languageBlock =
@@ -163,11 +169,64 @@ extension ChatCLIProvider {
 
     Requirements:
     - Return the FULL corrected JSON output (not a diff).
-    - Preserve the same overall time coverage: no gaps or overlaps.
+    - Preserve exactly the source-supported coverage. Keep genuine source gaps uncovered; never bridge them. Cards may be separated only where the inputs have a real gap. No overlaps.
     - Each card must be 10-60 minutes, except the final card may be shorter.
     - If a mid-card is too short, merge it with an adjacent card and update title/summary accordingly.
     - Output JSON only. No code fences or extra text.
     """
+  }
+
+  func buildTranscriptionCorrectionPrompt(
+    validationError: String,
+    duration: String
+  ) -> String {
+    """
+    The previous transcription response failed output validation. Correct that response using the screenshots and context already in this conversation.
+
+    Issue:
+    \(validationError)
+
+    Return the FULL corrected JSON object, not a diff. Preserve factual activity descriptions unless a timestamp boundary requires regrouping. The first segment must start at 00:00:00, the last must end at \(duration), and consecutive segments must have no gaps or overlaps. Return JSON only, with no Markdown fence or commentary. Do not reread files or use tools.
+    """
+  }
+
+  func buildScreenshotTranscriptionPrompt(
+    numFrames: Int, duration: String, startTime: String, endTime: String
+  ) -> String {
+    return """
+      Analyze these \(numFrames) screenshots from a \(duration) screen recording
+      (\(startTime) to \(endTime)). They are 1 min apart and in order.
+
+      Create an activity log detailed enough that someone could reconstruct what
+      the user did.
+
+      For each segment, ask yourself: "What EXACTLY did they do? What SPECIFIC
+      things can I see?"
+
+      Capture from screenshots:
+      - Exact app/site names visible
+      - Exact file names, URLs, page titles
+      - Exact usernames, search queries, messages
+      - Exact numbers, stats, prices shown
+
+      Bad: "Checked email"
+      Good: "Gmail: Read email from boss@company.com 'RE: Budget approval' - replied 'Looks good'"
+
+      Bad: "Browsing Twitter"
+      Good: "Twitter/X: Scrolled feed - viewed posts by @pmarca about AI, @sama thread on GPT-5 (12 tweets)"
+
+      Bad: "Working on code"
+      Good: "VS Code: Editing StorageManager.swift - fixed type error on line 47, changed String to String?"
+
+      3-8 segments total.
+      Exception: You may use 1 segment only if the user appears idle for most of the recording.
+      Group by GOAL not app (debugging across IDE+Terminal+Browser = 1 segment).
+
+      Timestamps must start at \(startTime) and end at \(endTime). No gaps.
+
+      Return JSON only:
+      {"segments":[{"start":"HH:MM:SS","end":"HH:MM:SS","description":"..."}]}
+      """
   }
 
 }

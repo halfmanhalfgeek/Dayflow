@@ -143,6 +143,7 @@ extension GeminiDirectProvider {
         if hasValidationErrors {
           AnalyticsService.shared.captureValidationFailure(
             provider: "gemini",
+            providerID: .gemini,
             operation: "transcribe",
             validationType: "timestamp_exceeds_duration",
             attempt: attempt + 1,
@@ -162,6 +163,7 @@ extension GeminiDirectProvider {
         if observations.isEmpty {
           AnalyticsService.shared.captureValidationFailure(
             provider: "gemini",
+            providerID: .gemini,
             operation: "transcribe",
             validationType: "empty_observations",
             attempt: attempt + 1,
@@ -332,6 +334,7 @@ extension GeminiDirectProvider {
         callGroupId: groupId,
         attempt: attempt,
         provider: "gemini",
+        providerID: LLMProviderID.gemini.rawValue,
         model: modelName,
         operation: "transcribe",
         requestMethod: request.httpMethod,
@@ -497,6 +500,7 @@ extension GeminiDirectProvider {
           callGroupId: groupId,
           attempt: attempt,
           provider: "gemini",
+          providerID: LLMProviderID.gemini.rawValue,
           model: modelName,
           operation: "transcribe",
           requestMethod: request.httpMethod,
