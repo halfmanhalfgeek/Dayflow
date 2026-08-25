@@ -16,6 +16,7 @@ final class ProvidersSettingsViewModelTests: XCTestCase {
     "chatgptSetupComplete",
     "claudeSetupComplete",
     "geminiSelectedModel_v3",
+    "geminiSelectedModel_v4",
     LLMProviderRoutingStore.storageKey,
   ]
 
@@ -63,14 +64,28 @@ final class ProvidersSettingsViewModelTests: XCTestCase {
   }
 
   func testProviderSetupCompletionRefreshesGeminiModelPreference() {
-    GeminiModelPreference(primary: .flash35).save()
+    GeminiModelPreference(primary: .flash36).save()
     let viewModel = ProvidersSettingsViewModel()
-    XCTAssertEqual(viewModel.selectedGeminiModel, .flash35)
+    XCTAssertEqual(viewModel.selectedGeminiModel, .flash36)
 
-    GeminiModelPreference(primary: .flashLite31).save()
+    GeminiModelPreference(primary: .flashLite35).save()
 
     XCTAssertTrue(viewModel.handleProviderSetupCompletion(.gemini))
-    XCTAssertEqual(viewModel.selectedGeminiModel, .flashLite31)
+    XCTAssertEqual(viewModel.selectedGeminiModel, .flashLite35)
+  }
+
+  func testGeminiModelPreferenceUsesTheNewFallbackChain() {
+    XCTAssertEqual(GeminiModel.flash36.rawValue, "gemini-3.6-flash")
+    XCTAssertEqual(GeminiModel.flash35.rawValue, "gemini-3.5-flash")
+    XCTAssertEqual(GeminiModel.flashLite35.rawValue, "gemini-3.5-flash-lite")
+    XCTAssertEqual(
+      GeminiModelPreference.default.orderedModels,
+      [.flash36, .flash35, .flashLite35]
+    )
+    XCTAssertEqual(
+      GeminiModelPreference(primary: .flash35).orderedModels,
+      [.flash35, .flashLite35]
+    )
   }
 
   func testProviderSetupStateHydratesTheSavedLocalConfiguration() {
@@ -104,5 +119,49 @@ final class ProvidersSettingsViewModelTests: XCTestCase {
 
     XCTAssertTrue(viewModel.handleProviderSetupCompletion(.claude))
     XCTAssertEqual(viewModel.primaryRoutingProviderId, .claude)
+  }
+
+  func testSwitchingPromptProviderLoadsThatProvidersOverrides() {
+    CodexPromptPreferences.save(ActivityCardPromptOverrides(titleBlock: "Codex title"))
+    ClaudePromptPreferences.save(ActivityCardPromptOverrides(titleBlock: "Claude title"))
+
+    let viewModel = ProvidersSettingsViewModel()
+    viewModel.loadAgentPromptOverridesIfNeeded(force: true)
+    XCTAssertEqual(viewModel.agentTitlePromptText, "Codex title")
+
+    viewModel.selectedAgentPromptProvider = .claude
+    XCTAssertEqual(viewModel.agentTitlePromptText, "Claude title")
+  }
+
+  func testEditingClaudePromptDoesNotMutateCodexPrompt() {
+    let viewModel = ProvidersSettingsViewModel()
+    viewModel.loadAgentPromptOverridesIfNeeded(force: true)
+    viewModel.selectedAgentPromptProvider = .claude
+    viewModel.useCustomAgentTitlePrompt = true
+    viewModel.agentTitlePromptText = "Claude-only edited title"
+
+    viewModel.selectedAgentPromptProvider = .chatGPT
+    XCTAssertFalse(viewModel.useCustomAgentTitlePrompt)
+    XCTAssertEqual(viewModel.agentTitlePromptText, CodexPromptDefaults.titleBlock)
+    XCTAssertTrue(CodexPromptPreferences.load().isEmpty)
+
+    viewModel.selectedAgentPromptProvider = .claude
+    XCTAssertTrue(viewModel.useCustomAgentTitlePrompt)
+    XCTAssertEqual(viewModel.agentTitlePromptText, "Claude-only edited title")
+  }
+
+  func testResetRestoresOnlyTheSelectedProvidersDefaults() {
+    let codexOverrides = ActivityCardPromptOverrides(titleBlock: "Codex title")
+    let claudeOverrides = ActivityCardPromptOverrides(titleBlock: "Claude title")
+    CodexPromptPreferences.save(codexOverrides)
+    ClaudePromptPreferences.save(claudeOverrides)
+
+    let viewModel = ProvidersSettingsViewModel()
+    viewModel.selectedAgentPromptProvider = .claude
+    viewModel.resetAgentPromptOverrides()
+
+    XCTAssertEqual(viewModel.agentTitlePromptText, ClaudePromptDefaults.titleBlock)
+    XCTAssertTrue(ClaudePromptPreferences.load().isEmpty)
+    XCTAssertEqual(CodexPromptPreferences.load(), codexOverrides)
   }
 }

@@ -75,17 +75,20 @@ extension AgentCLISupporting {
       failureReason = "invalid_json"
     }
 
-    AnalyticsService.shared.capture(
-      "llm_decode_failed",
-      [
-        "provider": "chat_cli",
-        "provider_id": providerID.rawValue,
-        "operation": "parse_segments",
-        "tool": cliTool.rawValue,
-        "failure_reason": failureReason,
-        "output_was_empty": trimmedOutput.isEmpty,
-        "stderr_was_empty": trimmedStderr.isEmpty,
-      ])
+    var decodeProperties: [String: Any] = [
+      "provider": "chat_cli",
+      "provider_id": providerID.rawValue,
+      "operation": "parse_segments",
+      "tool": cliTool.rawValue,
+      "failure_reason": failureReason,
+    ]
+    decodeProperties.merge(
+      TelemetryErrorSanitizer.failureOutputProperties(output, prefix: "output")
+    ) { _, new in new }
+    decodeProperties.merge(
+      TelemetryErrorSanitizer.failureOutputProperties(stderr, prefix: "stderr")
+    ) { _, new in new }
+    AnalyticsService.shared.capture("llm_decode_failed", decodeProperties)
 
     // Surface CLI error messages to the user if available
     if let cliError = extractCLIError(stdout: output, stderr: stderr) {
@@ -106,14 +109,8 @@ extension AgentCLISupporting {
     var parsed: [(start: TimeInterval, end: TimeInterval, description: String)] = []
 
     for segment in segments {
-      guard let startSeconds = strictSegmentTimestamp(segment.start),
-        let endSeconds = strictSegmentTimestamp(segment.end)
-      else {
-        return "Segments must use valid HH:MM:SS timestamps: \(segment.start) -> \(segment.end)"
-      }
-      if segment.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        return "Every segment must include a non-empty factual description."
-      }
+      let startSeconds = TimeInterval(parseVideoTimestamp(segment.start))
+      let endSeconds = TimeInterval(parseVideoTimestamp(segment.end))
       if endSeconds <= startSeconds {
         return "Segment end time must be after start time: \(segment.start) -> \(segment.end)"
       }
@@ -152,24 +149,6 @@ extension AgentCLISupporting {
     }
 
     return nil
-  }
-
-  private func strictSegmentTimestamp(_ timestamp: String) -> TimeInterval? {
-    let components =
-      timestamp
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-      .split(separator: ":", omittingEmptySubsequences: false)
-    guard components.count == 3,
-      let hours = Int(components[0]),
-      let minutes = Int(components[1]),
-      let seconds = Int(components[2]),
-      hours >= 0,
-      (0..<60).contains(minutes),
-      (0..<60).contains(seconds)
-    else {
-      return nil
-    }
-    return TimeInterval(hours * 3600 + minutes * 60 + seconds)
   }
 
 }

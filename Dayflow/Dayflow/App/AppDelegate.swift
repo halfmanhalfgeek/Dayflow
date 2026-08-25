@@ -61,6 +61,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // App opened (cold start)
     AnalyticsService.shared.capture("app_opened", ["cold_start": true])
 
+    // Agent access: accept CLI/MCP writes if the user enabled edits, and fix
+    // any MCP client config whose recorded path went stale (app was moved).
+    AgentBridgeServer.shared.startIfEnabled()
+    AgentClientRegistration.repairStaleRegistrations()
+
     // Start heartbeat for DAU tracking
     appLaunchDate = Date()
     startHeartbeat()
@@ -158,6 +163,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // Start daily recap generation scheduler (checks every 5 minutes)
     DailyRecapScheduler.shared.start()
+
+    // Flow desktop overlay (creature toasts/nudges) tracks the session mirror
+    FlowOverlayController.shared.start()
 
     // Observe recording state
     analyticsSub = AppState.shared.$isRecording

@@ -14,6 +14,203 @@ import AppKit
 import Foundation
 import PostHog
 
+struct TelemetrySanitizedStdout: Equatable {
+  let originalLength: Int
+  let nonJSONLength: Int
+  let removedJSON: Bool
+  let detail: String?
+}
+
+/// Sanitized failure details help us debug provider and validation regressions. Before sending
+/// them through opt-in analytics, make every reasonable attempt to remove PII and content-bearing
+/// sections; raw errors stay local because this best-effort sanitizer cannot cover every shape.
+enum TelemetryErrorSanitizer {
+  private static let maximumLength = 500
+  private static let privateSectionMarkers = [
+    "\n\n📥 INPUT CARDS:",
+    "\n📥 INPUT CARDS:",
+    "\n\n📤 OUTPUT CARDS:",
+    "\n📤 OUTPUT CARDS:",
+    "\n\n📄 RAW OUTPUT:",
+    "\n📄 RAW OUTPUT:",
+    "\n\nRAW OUTPUT:",
+    "\nRAW OUTPUT:",
+  ]
+
+  static func sanitize(_ rawValue: String?) -> String? {
+    guard var value = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !value.isEmpty
+    else { return nil }
+
+    for marker in privateSectionMarkers {
+      if let range = value.range(of: marker) {
+        value = String(value[..<range.lowerBound])
+      }
+    }
+
+    value = normalizeKnownValidationMessage(value)
+
+    let replacements: [(pattern: String, replacement: String)] = [
+      (#"\x1B\[[0-?]*[ -/]*[@-~]"#, ""),
+      (#"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"#, "<redacted-email>"),
+      (
+        #"(?i)\b(api[_-]?key|access[_-]?token|token|authorization)\s*[:=]\s*[^\s,;]+"#,
+        "$1=<redacted>"
+      ),
+      (#"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"#, "Bearer <redacted>"),
+      (#"\b(?:sk|phc|dfs)[-_A-Za-z0-9:.]{8,}\b"#, "<redacted-token>"),
+      (#"https?://[^\s]+"#, "<redacted-url>"),
+      (#"/(?:Users|private|var|tmp|Volumes)/[^\s,;]+"#, "<redacted-path>"),
+      (#"'[^\n]{1,512}'"#, "'<redacted>'"),
+      (#"\"[^\"\n]{1,512}\""#, "\"<redacted>\""),
+    ]
+    for replacement in replacements {
+      value = value.replacingOccurrences(
+        of: replacement.pattern,
+        with: replacement.replacement,
+        options: .regularExpression
+      )
+    }
+
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    return String(trimmed.prefix(maximumLength))
+  }
+
+  /// Failure output sometimes contains useful CLI diagnostics around model-generated payloads.
+  /// Remove every braced/bracketed block and fenced JSON before applying the same best-effort PII
+  /// redaction used for errors. Successful output is never sent to analytics.
+  static func sanitizeFailureStdout(_ rawValue: String?) -> TelemetrySanitizedStdout? {
+    guard let rawValue else { return nil }
+
+    let withoutFencedJSON = rawValue.replacingOccurrences(
+      of: #"(?is)```[ \t]*json[^\n]*\n.*?```"#,
+      with: "",
+      options: .regularExpression
+    )
+    var removedJSON = withoutFencedJSON != rawValue
+    let bytes = Array(withoutFencedJSON.utf8)
+    var kept: [UInt8] = []
+    var index = 0
+
+    while index < bytes.count {
+      let byte = bytes[index]
+      guard byte == UInt8(ascii: "{") || byte == UInt8(ascii: "[") else {
+        kept.append(byte)
+        index += 1
+        continue
+      }
+
+      guard let end = balancedJSONEnd(in: bytes, startingAt: index) else {
+        // Generated JSON can be truncated. Drop the rest of that line rather than risk sending a
+        // partial card, transcript, or other content-bearing payload.
+        removedJSON = true
+        index = bytes[index...].firstIndex(of: UInt8(ascii: "\n")) ?? bytes.count
+        continue
+      }
+
+      removedJSON = true
+      index = end + 1
+    }
+
+    let nonJSON = String(decoding: kept, as: UTF8.self)
+      .replacingOccurrences(
+        of: #"(?s)```[^\n]*\n\s*```"#,
+        with: "",
+        options: .regularExpression
+      )
+      .replacingOccurrences(
+        of: #"(?m)[ \t]{2,}"#,
+        with: " ",
+        options: .regularExpression
+      )
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+
+    return TelemetrySanitizedStdout(
+      originalLength: rawValue.count,
+      nonJSONLength: nonJSON.count,
+      removedJSON: removedJSON,
+      detail: sanitize(nonJSON)
+    )
+  }
+
+  static func failureOutputProperties(_ rawValue: String?, prefix: String) -> [String: Any] {
+    guard let sanitized = sanitizeFailureStdout(rawValue) else { return [:] }
+
+    var properties: [String: Any] = [
+      "\(prefix)_was_present": sanitized.originalLength > 0,
+      "\(prefix)_length": sanitized.originalLength,
+      "\(prefix)_json_removed": sanitized.removedJSON,
+      "\(prefix)_non_json_length": sanitized.nonJSONLength,
+    ]
+    if let detail = sanitized.detail {
+      properties["\(prefix)_non_json_detail"] = detail
+      properties["\(prefix)_non_json_sanitized"] = true
+    }
+    return properties
+  }
+
+  private static func balancedJSONEnd(in bytes: [UInt8], startingAt start: Int) -> Int? {
+    var expectedClosers: [UInt8] = []
+    var isInsideString = false
+    var isEscaped = false
+
+    for index in start..<bytes.count {
+      let byte = bytes[index]
+      if isInsideString {
+        if isEscaped {
+          isEscaped = false
+        } else if byte == UInt8(ascii: "\\") {
+          isEscaped = true
+        } else if byte == UInt8(ascii: "\"") {
+          isInsideString = false
+        }
+        continue
+      }
+
+      if byte == UInt8(ascii: "\"") {
+        isInsideString = true
+      } else if byte == UInt8(ascii: "{") {
+        expectedClosers.append(UInt8(ascii: "}"))
+      } else if byte == UInt8(ascii: "[") {
+        expectedClosers.append(UInt8(ascii: "]"))
+      } else if byte == UInt8(ascii: "}") || byte == UInt8(ascii: "]") {
+        guard expectedClosers.last == byte else { return nil }
+        expectedClosers.removeLast()
+        if expectedClosers.isEmpty { return index }
+      }
+    }
+
+    return nil
+  }
+
+  private static func normalizeKnownValidationMessage(_ value: String) -> String {
+    let safePrefixes: [(prefix: String, replacement: String)] = [
+      (
+        "Segment end time must be after start time:",
+        "Segment end time must be after start time."
+      ),
+      (
+        "Segment start time must be >= 00:00:00",
+        "Segment starts before 00:00:00."
+      ),
+      (
+        "Segment out of bounds:",
+        "Segment is outside the recording duration."
+      ),
+    ]
+    if let match = safePrefixes.first(where: { value.hasPrefix($0.prefix) }) {
+      return match.replacement
+    }
+
+    return value.replacingOccurrences(
+      of: #"(?s)^Card ([0-9]+) .* is only ([0-9]+(?:\.[0-9]+)? minutes long)$"#,
+      with: "Card $1 is only $2",
+      options: .regularExpression
+    )
+  }
+}
+
 final class AnalyticsService {
   static let shared = AnalyticsService()
 
@@ -325,6 +522,10 @@ final class AnalyticsService {
     if let errorDetail = errorDetail {
       props["has_error_detail"] = true
       props["error_detail_length"] = errorDetail.count
+      if let sanitizedDetail = TelemetryErrorSanitizer.sanitize(errorDetail) {
+        props["error_detail"] = sanitizedDetail
+        props["error_detail_sanitized"] = true
+      }
     } else {
       props["has_error_detail"] = false
     }

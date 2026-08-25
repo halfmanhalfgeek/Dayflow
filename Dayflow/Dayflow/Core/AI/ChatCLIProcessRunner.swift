@@ -2,14 +2,6 @@ import AppKit
 import Darwin
 import Foundation
 
-enum ClaudeCLIWrapperMode: Sendable, Equatable {
-  case safeMode
-
-  fileprivate var commandArgument: String {
-    "--safe-mode"
-  }
-}
-
 enum ClaudeCLISessionMode: Sendable, Equatable {
   /// Run a single turn without writing a resumable Claude session to disk.
   case ephemeral
@@ -27,7 +19,6 @@ struct ClaudeCLIExecutionProfile: Sendable {
   }
 
   fileprivate let kind: Kind
-  let wrapperMode: ClaudeCLIWrapperMode
   fileprivate let allowedReadPath: String?
 
   private static let optimizedTranscriptionSystemPrompt =
@@ -38,30 +29,29 @@ struct ClaudeCLIExecutionProfile: Sendable {
 
   static let optimizedTranscription = ClaudeCLIExecutionProfile(
     kind: .optimizedTranscription,
-    wrapperMode: .safeMode,
     allowedReadPath: nil
   )
 
   static let optimizedCardGeneration = ClaudeCLIExecutionProfile(
     kind: .optimizedCardGeneration,
-    wrapperMode: .safeMode,
     allowedReadPath: nil
   )
 
   static let optimizedTranscriptionCorrection = ClaudeCLIExecutionProfile(
     kind: .optimizedTranscriptionCorrection,
-    wrapperMode: .safeMode,
     allowedReadPath: nil
   )
 
   func allowingRead(at path: String) -> ClaudeCLIExecutionProfile {
     ClaudeCLIExecutionProfile(
       kind: kind,
-      wrapperMode: wrapperMode,
       allowedReadPath: path
     )
   }
 
+  // Do not add `--safe-mode` here. Some Claude CLI versions installed by Dayflow
+  // users do not support that flag, so these profiles restrict tools and slash
+  // commands explicitly instead.
   fileprivate func commandArguments(sessionMode: ClaudeCLISessionMode) -> [String] {
     let persistenceArguments = sessionMode == .ephemeral ? ["--no-session-persistence"] : []
     switch kind {
@@ -70,7 +60,6 @@ struct ClaudeCLIExecutionProfile: Sendable {
 
     case .optimizedCardGeneration:
       return [
-        wrapperMode.commandArgument,
         "--tools", LoginShellRunner.shellEscape(""),
         "--disable-slash-commands",
         "--system-prompt",
@@ -85,7 +74,6 @@ struct ClaudeCLIExecutionProfile: Sendable {
 
   private func transcriptionCommandArguments(persistenceArguments: [String]) -> [String] {
     var arguments = [
-      wrapperMode.commandArgument,
       "--disable-slash-commands",
       "--prompt-suggestions", "false",
       "--settings",
@@ -108,7 +96,16 @@ struct ClaudeCLIExecutionProfile: Sendable {
   }
 
   fileprivate var environmentOverrides: [String: String] {
-    ["MAX_THINKING_TOKENS": "0"]
+    switch kind {
+    case .optimizedCardGeneration:
+      return [:]
+    case .optimizedTranscription, .optimizedTranscriptionCorrection:
+      return ["MAX_THINKING_TOKENS": "0"]
+    }
+  }
+
+  fileprivate var environmentKeysToRemove: Set<String> {
+    kind == .optimizedCardGeneration ? ["MAX_THINKING_TOKENS"] : []
   }
 }
 
@@ -416,6 +413,7 @@ struct ChatCLIProcessRunner {
     model: String? = nil,
     reasoningEffort: String? = nil,
     sessionId: String? = nil,
+    codexConfigOverrides: [String] = [],
     environmentOverrides: [String: String] = [:],
     onProcessStart: (@Sendable (String, [String: String]) -> Void)? = nil
   ) -> AsyncThrowingStream<ChatStreamEvent, Error> {
@@ -429,6 +427,7 @@ struct ChatCLIProcessRunner {
             model: model,
             reasoningEffort: reasoningEffort,
             sessionId: sessionId,
+            codexConfigOverrides: codexConfigOverrides,
             continuation: continuation,
             onProcessStart: onProcessStart,
             processEnvironment: environmentOverrides
@@ -448,6 +447,7 @@ struct ChatCLIProcessRunner {
     model: String?,
     reasoningEffort: String?,
     sessionId: String?,
+    codexConfigOverrides: [String] = [],
     continuation: AsyncThrowingStream<ChatStreamEvent, Error>.Continuation,
     onProcessStart: (@Sendable (String, [String: String]) -> Void)? = nil,
     processEnvironment: [String: String] = [:],
@@ -474,6 +474,9 @@ struct ChatCLIProcessRunner {
       if let model = model { cmdParts.append(contentsOf: ["-m", model]) }
       if let effort = reasoningEffort {
         cmdParts.append(contentsOf: ["-c", "model_reasoning_effort=\(effort)"])
+      }
+      for override in codexConfigOverrides {
+        cmdParts.append(contentsOf: ["-c", LoginShellRunner.shellEscape(override)])
       }
       if shouldDisableConfiguredCodexMCPServers(processEnvironment: processEnvironment) {
         let mcpServers = LoginShellRunner.getCodexMCPServerNames(
@@ -695,28 +698,27 @@ struct ChatCLIProcessRunner {
         terminationStatus: process.terminationStatus,
         stderr: finalState.2,
         hasRetried: hasRetriedExecutableResolution
-      )
+      ),
+      let replacement = codexExecutableResolver.replacementIfUnavailable(codexExecutable)
     {
-      codexExecutableResolver.reject(codexExecutable.executableURL)
-      if let replacement = codexExecutableResolver.resolve() {
-        print(
-          "[ChatCLI] Retrying Codex with \(replacement.executableURL.path) after executable failure"
-        )
-        try await executeStreaming(
-          tool: tool,
-          prompt: prompt,
-          workingDirectory: workingDirectory,
-          model: model,
-          reasoningEffort: reasoningEffort,
-          sessionId: sessionId,
-          continuation: continuation,
-          onProcessStart: onProcessStart,
-          processEnvironment: processEnvironment,
-          hasRetriedInvalidTransport: hasRetriedInvalidTransport,
-          hasRetriedExecutableResolution: true
-        )
-        return
-      }
+      print(
+        "[ChatCLI] Retrying Codex with \(replacement.executableURL.path) after executable failure"
+      )
+      try await executeStreaming(
+        tool: tool,
+        prompt: prompt,
+        workingDirectory: workingDirectory,
+        model: model,
+        reasoningEffort: reasoningEffort,
+        sessionId: sessionId,
+        codexConfigOverrides: codexConfigOverrides,
+        continuation: continuation,
+        onProcessStart: onProcessStart,
+        processEnvironment: processEnvironment,
+        hasRetriedInvalidTransport: hasRetriedInvalidTransport,
+        hasRetriedExecutableResolution: true
+      )
+      return
     }
 
     if process.terminationStatus != 0,
@@ -740,6 +742,7 @@ struct ChatCLIProcessRunner {
         model: model,
         reasoningEffort: reasoningEffort,
         sessionId: sessionId,
+        codexConfigOverrides: codexConfigOverrides,
         continuation: continuation,
         onProcessStart: onProcessStart,
         processEnvironment: fallback.environment,
@@ -935,6 +938,9 @@ struct ChatCLIProcessRunner {
     guard tool == .claude, let claudeProfile else { return processEnvironment }
 
     var merged = processEnvironment
+    for key in claudeProfile.environmentKeysToRemove {
+      merged.removeValue(forKey: key)
+    }
     for (key, value) in claudeProfile.environmentOverrides {
       merged[key] = value
     }
@@ -1158,6 +1164,8 @@ struct ChatCLIProcessRunner {
     model: String? = nil, reasoningEffort: String? = nil, disableTools: Bool = false,
     claudeProfile: ClaudeCLIExecutionProfile? = nil,
     claudeSessionMode: ClaudeCLISessionMode = .ephemeral,
+    codexResumeSessionId: String? = nil,
+    codexConfigOverrides: [String] = [],
     environmentOverrides: [String: String] = [:],
     timeoutSeconds: TimeInterval = Constants.timeoutSeconds
   ) throws -> ChatCLIRunResult {
@@ -1171,6 +1179,8 @@ struct ChatCLIProcessRunner {
       disableTools: disableTools,
       claudeProfile: claudeProfile,
       claudeSessionMode: claudeSessionMode,
+      codexResumeSessionId: codexResumeSessionId,
+      codexConfigOverrides: codexConfigOverrides,
       processEnvironment: environmentOverrides,
       hasRetriedInvalidTransport: false,
       hasRetriedExecutableResolution: false,
@@ -1188,6 +1198,8 @@ struct ChatCLIProcessRunner {
     disableTools: Bool,
     claudeProfile: ClaudeCLIExecutionProfile?,
     claudeSessionMode: ClaudeCLISessionMode,
+    codexResumeSessionId: String? = nil,
+    codexConfigOverrides: [String] = [],
     processEnvironment: [String: String],
     hasRetriedInvalidTransport: Bool,
     hasRetriedExecutableResolution: Bool,
@@ -1208,10 +1220,20 @@ struct ChatCLIProcessRunner {
     var cmdParts: [String] = [executableCommand]
     switch tool {
     case .codex:
-      cmdParts.append(contentsOf: ["exec", "--skip-git-repo-check"])
+      if let codexResumeSessionId {
+        cmdParts.append(contentsOf: [
+          "exec", "resume", LoginShellRunner.shellEscape(codexResumeSessionId),
+          "--skip-git-repo-check",
+        ])
+      } else {
+        cmdParts.append(contentsOf: ["exec", "--skip-git-repo-check"])
+      }
       if let model = model { cmdParts.append(contentsOf: ["-m", model]) }
       if let effort = reasoningEffort {
         cmdParts.append(contentsOf: ["-c", "model_reasoning_effort=\(effort)"])
+      }
+      for override in codexConfigOverrides {
+        cmdParts.append(contentsOf: ["-c", LoginShellRunner.shellEscape(override)])
       }
       if shouldDisableConfiguredCodexMCPServers(processEnvironment: effectiveProcessEnvironment) {
         let mcpServers = LoginShellRunner.getCodexMCPServerNames(
@@ -1331,29 +1353,29 @@ struct ChatCLIProcessRunner {
         terminationStatus: process.terminationStatus,
         stderr: stderr,
         hasRetried: hasRetriedExecutableResolution
-      )
+      ),
+      let replacement = codexExecutableResolver.replacementIfUnavailable(codexExecutable)
     {
-      codexExecutableResolver.reject(codexExecutable.executableURL)
-      if let replacement = codexExecutableResolver.resolve() {
-        print(
-          "[ChatCLI] Retrying Codex with \(replacement.executableURL.path) after executable failure"
-        )
-        return try run(
-          tool: tool,
-          prompt: prompt,
-          workingDirectory: workingDirectory,
-          imagePaths: imagePaths,
-          model: model,
-          reasoningEffort: reasoningEffort,
-          disableTools: disableTools,
-          claudeProfile: claudeProfile,
-          claudeSessionMode: claudeSessionMode,
-          processEnvironment: effectiveProcessEnvironment,
-          hasRetriedInvalidTransport: hasRetriedInvalidTransport,
-          hasRetriedExecutableResolution: true,
-          timeoutSeconds: timeoutSeconds
-        )
-      }
+      print(
+        "[ChatCLI] Retrying Codex with \(replacement.executableURL.path) after executable failure"
+      )
+      return try run(
+        tool: tool,
+        prompt: prompt,
+        workingDirectory: workingDirectory,
+        imagePaths: imagePaths,
+        model: model,
+        reasoningEffort: reasoningEffort,
+        disableTools: disableTools,
+        claudeProfile: claudeProfile,
+        claudeSessionMode: claudeSessionMode,
+        codexResumeSessionId: codexResumeSessionId,
+        codexConfigOverrides: codexConfigOverrides,
+        processEnvironment: effectiveProcessEnvironment,
+        hasRetriedInvalidTransport: hasRetriedInvalidTransport,
+        hasRetriedExecutableResolution: true,
+        timeoutSeconds: timeoutSeconds
+      )
     }
 
     if process.terminationStatus != 0,
@@ -1380,6 +1402,8 @@ struct ChatCLIProcessRunner {
         disableTools: disableTools,
         claudeProfile: claudeProfile,
         claudeSessionMode: claudeSessionMode,
+        codexResumeSessionId: codexResumeSessionId,
+        codexConfigOverrides: codexConfigOverrides,
         processEnvironment: fallback.environment,
         hasRetriedInvalidTransport: true,
         hasRetriedExecutableResolution: hasRetriedExecutableResolution,
