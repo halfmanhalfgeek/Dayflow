@@ -99,7 +99,7 @@ final class GeminiAPIHelper {
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    request.setValue(cleanedAPIKey, forHTTPHeaderField: "X-Goog-Api-Key")
+    request.setValue(apiKey, forHTTPHeaderField: "X-Goog-Api-Key")
 
     let requestBody: [String: Any] = [
       "contents": [
