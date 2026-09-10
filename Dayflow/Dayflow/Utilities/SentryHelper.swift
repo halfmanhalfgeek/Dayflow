@@ -96,9 +96,12 @@ final class SentryHelper {
 
     DispatchQueue.global(qos: .utility).async {
       guard let report = newestAppleCrashReport() else { return }
+      guard let reportData = try? Data(contentsOf: report),
+        let sanitizedData = AppleCrashReportSanitizer.sanitize(data: reportData)
+      else { return }
       let attachment = Attachment(
-        path: report.path,
-        filename: report.lastPathComponent,
+        data: sanitizedData,
+        filename: "Dayflow-crash-metadata.json",
         contentType: "application/json"
       )
       let event = Event(level: .info)

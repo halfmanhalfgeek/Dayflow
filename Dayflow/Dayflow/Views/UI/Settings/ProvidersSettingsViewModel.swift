@@ -685,15 +685,6 @@ final class ProvidersSettingsViewModel: ObservableObject {
     }
   }
 
-<<<<<<< HEAD
-  private func recordProviderSetupCompleted(_ providerId: String) {
-    var props: [String: Any] = ["provider": providerId]
-    if providerId == "ollama" {
-      let localEngineValue = UserDefaults.standard.string(forKey: "llmLocalEngine") ?? "ollama"
-      let localModelValue = UserDefaults.standard.string(forKey: "llmLocalModelId") ?? "unknown"
-      let localBaseValue = UserDefaults.standard.string(forKey: "llmLocalBaseURL") ?? "unknown"
-      let localAPIKeyValue = (KeychainManager.shared.retrieve(for: "localLLM") ?? "")
-=======
   private func recordProviderSetupCompleted(_ providerId: LLMProviderID) {
     var properties: [String: Any] = [
       "provider": providerId.analyticsName,
@@ -704,8 +695,7 @@ final class ProvidersSettingsViewModel: ObservableObject {
         UserDefaults.standard.string(forKey: "llmLocalEngine") ?? "ollama"
       properties["model_id"] =
         UserDefaults.standard.string(forKey: "llmLocalModelId") ?? "unknown"
-      let localAPIKey = (UserDefaults.standard.string(forKey: "llmLocalAPIKey") ?? "")
->>>>>>> upstream/main
+      let localAPIKey = (KeychainManager.shared.retrieve(for: "localLLM") ?? "")
         .trimmingCharacters(in: .whitespacesAndNewlines)
       properties["has_api_key"] = !localAPIKey.isEmpty
     } else if providerId == .chatGPT {
