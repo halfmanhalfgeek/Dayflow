@@ -16,6 +16,8 @@ struct MainView: View {
   @EnvironmentObject var appState: AppState
   @EnvironmentObject var categoryStore: CategoryStore
   @Environment(\.accessibilityReduceMotion) var reduceMotion
+  @Environment(\.dayflowTheme) var theme
+  @Environment(\.stylePreviewAfter) var stylePreviewAfter
   @ObservedObject private var authManager = DayflowAuthManager.shared
   @State var selectedIcon: SidebarIcon = .timeline
   @State var selectedDate = timelineDisplayDate(from: Date())
@@ -105,6 +107,9 @@ struct MainView: View {
 
   var body: some View {
     mainLayout
+      .onReceive(NotificationCenter.default.publisher(for: .navigateToSupport)) { _ in
+        selectedIcon = .bug
+      }
       .onReceive(NotificationCenter.default.publisher(for: .navigateToDaily)) { notification in
         let wasAlreadyOnDaily = selectedIcon == .daily
         if let dayString = notification.userInfo?["day"] as? String,

@@ -16,6 +16,7 @@ This document lists manual events, properties, and code locations. All events re
   - props: `from_version: string`, `to_version: string`
   - file: App/AppDelegate.swift
 - app_heartbeat
+  - appearance props: `appearance: system|light|dark` (saved preference, defaults to system), `effective_appearance: light|dark` (resolved at each heartbeat, including forced light during onboarding). Sent on startup and hourly; use each person's latest heartbeat for a user split rather than counting events.
   - props: `session_hours: number`, `cpu_current_pct_bucket?: 0-5%|5-20%|20-50%|50-100%|100-150%|150-200%|>200%`, `cpu_avg_pct_bucket?: 0-5%|5-20%|20-50%|50-100%|100-150%|150-200%|>200%`, `cpu_peak_pct_bucket?: 0-5%|5-20%|20-50%|50-100%|100-150%|150-200%|>200%`, `cpu_sample_count?: int`, `cpu_sampler_interval_s?: int`, `current_tab?: timeline|daily|weekly|dashboard|journal|bug_report|settings`, `timeline_mode?: day|week`
   - file: App/AppDelegate.swift
 - app_cpu_spike
@@ -85,6 +86,26 @@ This document lists manual events, properties, and code locations. All events re
   - props: `schema_version: int`, `interface: cli|mcp`, allowlisted `operation: string`, `outcome: success|failure|cancelled`, `failure_category?: invalid_input|not_found|edits_disabled|unavailable|execution_error|tool_error`, `duration_bucket: under_100ms|100_to_499ms|500_to_1999ms|2_to_9s|10s_plus`, `cli_version: string`
   - privacy: locally queued and uploaded only through the opted-in app; never includes arguments, dates, search text, record IDs, paths, command lines, error text, or returned content
   - files: tools/dayflow-cli/Sources/dayflow/AgentUsageTelemetry.swift, Core/AgentAccess/AgentUsageTelemetryQueue.swift
+
+## AgentPlayback
+- agentplayback_opened
+  - props: `already_loaded: bool`
+  - once per tab visit, including visits that fail to load; not emitted on every foreground transition
+- agentplayback_launch_started
+  - props: `mode: latest|cached_fallback`
+- agentplayback_launch_completed
+  - props: `mode: latest|cached_fallback`, `outcome: success|failure`, `duration_seconds: number`, `agentplayback_version?: string`, `failure_category?: preparation|process_launch|process_exit|missing_runtime|timeout|navigation|web_content_terminated`, `will_try_fallback?: bool`, failure diagnostics: `startup_stage`, `output_character_count`, `login_shell`, `termination_status?`, `termination_reason?`
+  - one result per launch attempt; success means WebKit finished loading the dashboard, not that every historical scan finished; a recovered failure and fallback success remain separate attempts
+- agentplayback_runtime_failed
+  - props: `mode: latest|cached_fallback`, `agentplayback_version?: string`, `failure_category: preparation|process_launch|process_exit|missing_runtime|timeout|navigation|web_content_terminated`, `will_try_fallback: bool`, `startup_stage`, `output_character_count`, `login_shell`, `termination_status?`, `termination_reason?`
+  - failures after the initial page load, separate from startup failures
+- agentplayback_retry_clicked
+  - explicit click on Try again
+- agentplayback_session_ended
+  - props: `duration_seconds: number`, `reason: tab_closed|background|unavailable|app_exit`
+  - one foreground viewing interval with the Agents tab selected and dashboard loaded; excludes downloads, hidden-tab time, and time in other apps; sum durations for total viewing time, not session counts for unique visits; crashes may lose the final interval
+  - privacy: all events use AnalyticsService and its analytics opt-in; no transcript text, project names, paths, URLs, terminal output, token costs, or user-selected dates; opting out discards the current viewing interval
+  - files: Views/UI/Agents/AgentPlaybackView.swift, Views/UI/Agents/AgentPlaybackUsage.swift
 
 ## Settings & Privacy
 - settings_opened

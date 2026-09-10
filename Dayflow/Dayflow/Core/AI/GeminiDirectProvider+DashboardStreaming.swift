@@ -2,6 +2,7 @@ import Foundation
 
 extension GeminiDirectProvider {
   func streamDashboardTurn(
+    model: GeminiModel,
     systemInstruction: String,
     contents: [[String: Any]],
     includeThinkingConfig: Bool,
@@ -12,7 +13,8 @@ extension GeminiDirectProvider {
       contents: contents,
       includeThinkingConfig: includeThinkingConfig
     )
-    var request = URLRequest(url: URL(string: dashboardStreamEndpoint + "?alt=sse")!)
+    var request = URLRequest(
+      url: URL(string: dashboardStreamEndpoint(model: model) + "?alt=sse")!)
     request.httpMethod = "POST"
     request.setValue(apiKey, forHTTPHeaderField: "X-Goog-Api-Key")
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -91,6 +93,7 @@ extension GeminiDirectProvider {
   }
 
   func generateDashboardTurnNonStreaming(
+    model: GeminiModel,
     systemInstruction: String,
     contents: [[String: Any]],
     includeThinkingConfig: Bool
@@ -102,7 +105,8 @@ extension GeminiDirectProvider {
       contents: contents,
       includeThinkingConfig: includeThinkingConfig
     )
-    var request = URLRequest(url: URL(string: dashboardGenerateEndpoint)!)
+    var request = URLRequest(
+      url: URL(string: dashboardGenerateEndpoint(model: model))!)
     request.httpMethod = "POST"
     request.setValue(apiKey, forHTTPHeaderField: "X-Goog-Api-Key")
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
