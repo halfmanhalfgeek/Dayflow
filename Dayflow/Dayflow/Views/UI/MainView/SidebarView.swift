@@ -51,14 +51,20 @@ enum SidebarIcon: CaseIterable {
 
   var displayName: String {
     switch self {
-    case .timeline: return "Timeline"
-    case .daily: return "Daily"
-    case .weekly: return "Weekly"
-    case .chat: return "Chat"
-    case .flow: return "Flow"
-    case .agents: return "Agents"
-    case .bug: return "Support"
-    case .settings: return "Settings"
+    case .timeline: return String(localized: "Timeline")
+    case .daily:
+      return String(
+        localized: "sidebar.daily", defaultValue: "Daily",
+        comment: "Short sidebar label for the daily recap view.")
+    case .weekly:
+      return String(
+        localized: "sidebar.weekly", defaultValue: "Weekly",
+        comment: "Short sidebar label for the weekly recap view.")
+    case .chat: return String(localized: "Chat")
+    case .flow: return String(localized: "Flow")
+    case .agents: return String(localized: "Agents")
+    case .bug: return String(localized: "Support")
+    case .settings: return String(localized: "Settings")
     }
   }
 
@@ -79,24 +85,10 @@ enum SidebarIcon: CaseIterable {
 struct SidebarView: View {
   @Binding var selectedIcon: SidebarIcon
   @ObservedObject private var badgeManager = NotificationBadgeManager.shared
-  @ObservedObject private var authManager = DayflowAuthManager.shared
-
-  private var visibleIcons: [SidebarIcon] {
-    SidebarIcon.allCases.filter { icon in
-      if icon == .flow { return SidebarView.showsFlowTab(flowEnabled: authManager.flowEnabled) }
-      return true
-    }
-  }
-
-  /// Flow is a whitelisted beta: the signed-in account must be flagged by the
-  /// backend (flow_enabled). Signed out or unflagged → no tab, in all builds.
-  static func showsFlowTab(flowEnabled: Bool) -> Bool {
-    flowEnabled
-  }
 
   var body: some View {
     VStack(alignment: .center, spacing: SidebarMetrics.itemSpacing) {
-      ForEach(visibleIcons, id: \.self) { icon in
+      ForEach(SidebarIcon.allCases, id: \.self) { icon in
         SidebarIconButton(
           icon: icon,
           isSelected: selectedIcon == icon,

@@ -6,8 +6,7 @@ import SwiftUI
 
 private let cachedTimeFormatter: DateFormatter = {
   let formatter = DateFormatter()
-  formatter.dateFormat = "h:mm a"
-  formatter.locale = Locale(identifier: "en_US_POSIX")
+  formatter.timeStyle = .short
   return formatter
 }()
 
@@ -70,6 +69,8 @@ struct CanvasTimelineDataView: View {
   let cardNormalVerticalPadding: CGFloat
   let cardHoverScale: CGFloat
   let cardPressedScale: CGFloat
+  // Categories turned off in the chip row; their cards render dimmed.
+  var mutedCategoryKeys: Set<String> = []
 
   @Environment(\.dayflowTheme) private var theme
   @State private var selectedCardId: String? = nil
@@ -376,6 +377,8 @@ struct CanvasTimelineDataView: View {
           )
           .frame(width: geo.size.width, height: item.height)
           .position(x: geo.size.width / 2, y: item.yPosition + (item.height / 2))
+          .opacity(mutedCategoryKeys.contains(categoryFilterKey(item.categoryName)) ? 0.25 : 1)
+          .animation(.easeOut(duration: 0.15), value: mutedCategoryKeys)
           // Staggered entrance animation (Emil Kowalski: sequential reveal creates polish)
           .opacity(isVisible ? 1 : 0)
           .offset(x: isVisible ? 0 : 12)
@@ -544,14 +547,16 @@ struct CanvasTimelineDataView: View {
   private var pausedStatusText: some View {
     statusText(
       iconName: "pause.fill",
-      message: "Dayflow is paused. Click 'Resume' to generate new activity cards."
+      message: String(
+        localized: "Dayflow is paused. Click 'Resume' to generate new activity cards.")
     )
   }
 
   private var stoppedStatusText: some View {
     statusText(
       iconName: "play.fill",
-      message: "Dayflow isn't recording. Click 'Resume' to generate new activity cards."
+      message: String(
+        localized: "Dayflow isn't recording. Click 'Resume' to generate new activity cards.")
     )
   }
 
@@ -806,10 +811,10 @@ struct CanvasTimelineDataView: View {
 
   private func formatHour(_ hour: Int) -> String {
     let normalizedHour = hour >= 24 ? hour - 24 : hour
-    let adjustedHour =
-      normalizedHour > 12 ? normalizedHour - 12 : (normalizedHour == 0 ? 12 : normalizedHour)
-    let period = normalizedHour >= 12 ? "PM" : "AM"
-    return "\(adjustedHour):00 \(period)"
+    let date =
+      Calendar.current.date(bySettingHour: normalizedHour, minute: 0, second: 0, of: Date())
+      ?? Date()
+    return cachedTimeFormatter.string(from: date)
   }
 
   private func formatRange(start: Date, end: Date) -> String {

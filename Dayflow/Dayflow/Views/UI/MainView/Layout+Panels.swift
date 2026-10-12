@@ -165,6 +165,7 @@ extension MainView {
       TabFilterBar(
         categories: categoryStore.editableCategories,
         idleCategory: categoryStore.idleCategory,
+        mutedCategoryKeys: $mutedCategoryKeys,
         onManageCategories: { showCategoryEditor = true }
       )
       .padding(.leading, 10 + TimelineAlignment.categoryRowInset)
@@ -194,7 +195,8 @@ extension MainView {
             cardCompactVerticalPadding: TimelineCardLayout.compactVerticalPadding,
             cardNormalVerticalPadding: TimelineCardLayout.normalVerticalPadding,
             cardHoverScale: TimelineCardLayout.hoverScale,
-            cardPressedScale: TimelineCardLayout.pressedScale
+            cardPressedScale: TimelineCardLayout.pressedScale,
+            mutedCategoryKeys: mutedCategoryKeys
           )
           // Day is the zoomed-IN view (1/7 of a week). Entering Day feels
           // like diving into a single column: grow from 0.95 → 1 + fade in.
@@ -214,7 +216,8 @@ extension MainView {
             onClearSelection: { clearTimelineSelection() },
             weeklyHoursFrame: weeklyHoursFrame,
             weeklyHoursIntersectsCard: $weeklyHoursIntersectsCard,
-            hideCardsForModeSwitch: hideWeekCardsDuringModeSwitch
+            hideCardsForModeSwitch: hideWeekCardsDuringModeSwitch,
+            mutedCategoryKeys: mutedCategoryKeys
           )
           // Week is the zoomed-OUT view (7 days). Entering Week from Day
           // feels like pulling back: start at 1.05 (slightly too large) and
@@ -487,7 +490,10 @@ extension MainView {
         }
       }
       .animation(.spring(response: 0.3, dampingFraction: 0.85), value: copyTimelineState)
-      .frame(width: stylePreviewAfter ? 122 : 104, height: stylePreviewAfter ? 26 : 23)
+      .fixedSize(horizontal: true, vertical: false)
+      .padding(.horizontal, 8)
+      .frame(minWidth: stylePreviewAfter ? 122 : 104)
+      .frame(height: stylePreviewAfter ? 26 : 23)
       .foregroundColor(textColor)
       .background(background)
       .background {
