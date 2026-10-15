@@ -14,6 +14,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     case daily(day: String?)
     case weekly
     case support
+    case flow
+    case timeline
   }
 
   // Controls whether the app is allowed to terminate.
@@ -47,6 +49,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Block termination by default; only specific flows enable it.
     AppDelegate.allowTermination = false
     applySavedDockIconPreference()
+    #if DEBUG
+      if #available(macOS 15.0, *) { FlowDebugRecorder.shared.install() }
+    #endif
 
     // Configure crash reporting (Sentry) from shared telemetry preference.
     SentryHelper.setEnabled(AnalyticsService.shared.isOptedIn)
@@ -82,6 +87,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
       let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
       AnalyticsService.shared.capture(
         "app_updated", ["from_version": last, "to_version": "\(version) (\(build))"])
+      CLIAutoUpdater.updateProviderCLIs()
     }
     UserDefaults.standard.set(build, forKey: "lastRunBuild")
     statusBar = StatusBarController()
@@ -120,32 +126,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
           return
         }
 
-        do {
-          // Check if we have permission by trying to access content
-          _ = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-          // Permission granted - restore saved preference or default to ON
-          await MainActor.run {
-            let savedPref = AppState.shared.getSavedPreference()
-            AppState.shared.setRecording(savedPref ?? true, analyticsReason: "auto")
-          }
-          let finalState = await MainActor.run { AppState.shared.isRecording }
-          AnalyticsService.shared.capture(
-            "recording_toggled", ["enabled": finalState, "reason": "auto"])
-        } catch {
-          // No permission or error - don't start recording
-          // User will need to grant permission in onboarding
-          await MainActor.run {
-            AppState.shared.setRecording(
-              false,
-              analyticsReason: "auto",
-              persistPreference: false
-            )
-          }
-          if didOnboard {
-            ScreenRecordingPermissionNotice.post(reason: "launch_shareable_content_failed")
-          }
-          print("Screen recording permission not granted, skipping auto-start")
+        // Permission granted - restore saved preference or default to ON.
+        // No extra SCShareableContent probe here: every ScreenCaptureKit call makes
+        // macOS re-check the grant (issue #381), and the recorder's own start
+        // retries with backoff if capture really can't begin.
+        await MainActor.run {
+          let savedPref = AppState.shared.getSavedPreference()
+          AppState.shared.setRecording(savedPref ?? true, analyticsReason: "auto")
         }
+        let finalState = await MainActor.run { AppState.shared.isRecording }
+        AnalyticsService.shared.capture(
+          "recording_toggled", ["enabled": finalState, "reason": "auto"])
         self.flushPendingDeepLinks()
       }
     } else {
@@ -163,13 +154,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // Start Daily and Weekly notifications and retire legacy Journal reminders
     NotificationService.shared.start()
+    DayflowAuthManager.shared.loadStoredSessionIfNeeded()
     SupportChatSession.shared.start()
+    SupportChatSession.startFlowWaitlistMonitoring()
 
     // Start daily recap generation scheduler (checks every 5 minutes)
     DailyRecapScheduler.shared.start()
 
     // Flow desktop overlay (creature toasts/nudges) tracks the session mirror
     FlowOverlayController.shared.start()
+    FlowEarlyBirdController.shared.start()
 
     // Observe recording state
     analyticsSub = AppState.shared.$isRecording
@@ -357,6 +351,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
   private func sendHeartbeat() {
     if analyticsConfigured {
       AgentUsageTelemetryQueue.drain()
+      CLIVersionTelemetry.refreshIfStale()
     }
     var props: [String: Any] = [:]
     let appearance =
@@ -389,6 +384,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         props["timeline_mode"] = timelineMode
       }
     }
+    props.merge(ScreenCaptureMonitor.shared.heartbeatPropertiesAndReset()) { _, new in new }
     AnalyticsService.shared.capture("app_heartbeat", props)
     flushReferralUsage(reason: "heartbeat")
   }

@@ -575,7 +575,7 @@ final class AnalyticsService {
     // Drop known sensitive keys if ever passed by mistake
     let blocked = Set([
       "api_key", "token", "authorization", "file_path", "url", "base_url", "window_title",
-      "clipboard", "screen_content", "host",
+       "clipboard", "screen_content", "host", "endpoint_host",
     ])
     var out: [String: Any] = [:]
     for (k, v) in props {
