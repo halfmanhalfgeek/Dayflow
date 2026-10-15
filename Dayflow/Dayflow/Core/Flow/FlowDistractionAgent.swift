@@ -168,7 +168,9 @@ final class FlowDistractionAgent: ObservableObject {
     let prompt = initialPrompt()
     let runner = self.runner
 
-    print("[FlowAgent] Starting Codex conversation (style: \(alertStyle.rawValue))")
+    #if DEBUG
+      print("[FlowAgent] Starting Codex conversation")
+    #endif
     statusLine = rebrief ? "Re-briefing \(settings.model)…" : "Briefing \(settings.model)…"
     tickInFlight = true
     let model = settings.model
@@ -211,7 +213,9 @@ final class FlowDistractionAgent: ObservableObject {
     tickInFlight = false
 
     guard let sessionId else {
-      print("[FlowAgent] Could not start Codex session: \(error ?? "no thread id in output")")
+      #if DEBUG
+        print("[FlowAgent] Could not start Codex session")
+      #endif
       appendTranscript("Couldn't start the agent: \(error ?? "no thread id in output")")
       statusLine = "Failed to start"
       AnalyticsService.shared.capture("flow_agent_start_failed")
@@ -220,7 +224,9 @@ final class FlowDistractionAgent: ObservableObject {
     }
     statusLine = "Watching (\(settings.model), \(settings.reasoningEffort))"
 
-    print("[FlowAgent] Codex session started: \(sessionId), first reply: \(reply.prefix(200))")
+    #if DEBUG
+      print("[FlowAgent] Codex session started")
+    #endif
     appendTranscript(reply)
     AnalyticsService.shared.capture("flow_agent_started")
     codexSessionId = sessionId
@@ -427,7 +433,9 @@ final class FlowDistractionAgent: ObservableObject {
 
     guard let reply else {
       consecutiveFailures += 1
-      print("[FlowAgent] Tick failed (\(consecutiveFailures)): \(error ?? "unknown")")
+      #if DEBUG
+        print("[FlowAgent] Tick failed")
+      #endif
       appendTranscript("Turn failed: \(error ?? "unknown")")
       // Codex lost the conversation (its rollout file is gone, e.g. a full
       // disk or a pruned sessions dir). Resuming will never work again, so
@@ -442,7 +450,9 @@ final class FlowDistractionAgent: ObservableObject {
         return
       }
       if consecutiveFailures >= settings.maxFailures {
-        print("[FlowAgent] Stopping after \(consecutiveFailures) consecutive failures")
+        #if DEBUG
+          print("[FlowAgent] Stopping after consecutive failures")
+        #endif
         appendTranscript("Agent stopped after \(consecutiveFailures) consecutive failures.")
         AnalyticsService.shared.capture("flow_agent_gave_up")
         stop()
@@ -457,7 +467,9 @@ final class FlowDistractionAgent: ObservableObject {
     guard let first = objects.first,
       let verdict = try? JSONDecoder().decode(Verdict.self, from: Data(first.utf8))
     else {
-      print("[FlowAgent] Unparseable reply, treating as on-task: \(reply.prefix(200))")
+      #if DEBUG
+        print("[FlowAgent] Unparseable reply, treating as on-task")
+      #endif
       return
     }
     // The verdict comes first and is acted on first; the timeline (when the
@@ -502,7 +514,9 @@ final class FlowDistractionAgent: ObservableObject {
       lastReportedOffTask = offTask
       FlowSessionMirror.shared.agentReportedFocusChange(isDistracted: offTask)
       if offTask {
-        print("[FlowAgent] Off task: \(verdict.reason ?? "no reason given")")
+        #if DEBUG
+          print("[FlowAgent] Off task")
+        #endif
       }
     }
 
@@ -516,7 +530,9 @@ final class FlowDistractionAgent: ObservableObject {
     }
     if !finished.isEmpty {
       reportedGoalIds.formUnion(finished.map(\.id))
-      print("[FlowAgent] Goals completed: \(finished.map(\.title))")
+      #if DEBUG
+        print("[FlowAgent] Goals completed: \(finished.count)")
+      #endif
       FlowSessionMirror.shared.agentCompletedGoals(finished)
     }
 

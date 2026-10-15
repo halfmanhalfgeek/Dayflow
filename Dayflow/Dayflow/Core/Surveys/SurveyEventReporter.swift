@@ -17,6 +17,10 @@ struct SurveyEvent: Codable, Equatable {
   let answer: SurveyJSONValue?
   let context: [String: SurveyJSONValue]
   let occurredAt: Date
+
+  func shouldSend(analyticsEnabled: Bool) -> Bool {
+    analyticsEnabled || (event != "eligible" && event != "shown")
+  }
 }
 
 @MainActor
@@ -43,6 +47,7 @@ final class SurveyEventReporter {
   }
 
   func record(_ event: SurveyEvent) {
+    guard event.shouldSend(analyticsEnabled: AnalyticsService.shared.isOptedIn) else { return }
     var pending = loadPendingEvents()
     pending.append(event)
     savePendingEvents(Self.trimmed(pending))
