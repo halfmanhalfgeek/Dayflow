@@ -262,6 +262,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
       self.cachedDisplay = nil
       self.currentDisplayID = nil
       FrameStore.shared.finishCurrentSegment()
+      AccessibilityRecorder.shared.stop()
 
       if self.state != .paused {
         self.transition(to: .idle, context: "stopped")
@@ -332,6 +333,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         self.setupFailingSince = nil
         self.startCaptureTimer()
         self.transition(to: .capturing, context: "capture started")
+        AccessibilityRecorder.shared.start()
 
         // Take first screenshot immediately
         self.captureTick()
@@ -749,6 +751,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
     q.async { [weak self] in
       guard let self else { return }
       self.stopCaptureTimer()
+      AccessibilityRecorder.shared.stop()
       self.cachedContent = nil
       self.cachedDisplay = nil
       self.currentDisplayID = nil
@@ -792,6 +795,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
       object: nil, queue: nil
     ) { _ in
       FrameStore.shared.finishCurrentSegment()
+      AccessibilityLogStore.shared.close()
     }
   }
 
