@@ -902,8 +902,8 @@ final class DailyBriefStore: ObservableObject {
     AnalyticsService.shared.capture("daily_brief_item_action", properties)
   }
 
-  /// What analytics may know about one item: where it sat in its section and, for
-  /// reading and news links, the site and the kind of picture it had. Never its title.
+  /// What analytics may know about one item: where it sat in its section and its picture kind.
+  /// Never its title, URL, or source domain.
   private func itemProperties(_ kind: DailyBriefSectionKind, _ title: String) -> [String: Any] {
     guard let content = brief?.content else { return [:] }
     let titles = DailyBriefSectionItems.titles(kind, in: content)
@@ -918,11 +918,9 @@ final class DailyBriefStore: ObservableObject {
       properties["picture"] = Self.pictureKind(item.imageFile, item.imageIsTitleCard)
       properties["has_hook"] = item.hook != nil
       if let minutes = item.minutes { properties["minutes"] = minutes }
-      if let host = URL(string: item.url)?.host { properties["source_domain"] = host }
     case .industryNews:
       guard let item = content.industryNews?.first(where: { $0.headline == title }) else { break }
       properties["picture"] = Self.pictureKind(item.imageFile, item.imageIsTitleCard)
-      if let host = URL(string: item.url)?.host { properties["source_domain"] = host }
     default:
       break
     }

@@ -16,6 +16,7 @@
 //
 
 import CoreGraphics
+import Darwin
 import Foundation
 import ImageIO
 import Vision
@@ -44,6 +45,33 @@ enum DailyBriefLinkImages {
   private static let userAgent =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) "
     + "Version/17.0 Safari/605.1.15"
+
+  static func isAllowedRemoteURL(_ url: URL) -> Bool {
+    guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
+      url.user == nil, url.password == nil,
+      let rawHost = url.host?.lowercased()
+    else { return false }
+
+    let host = rawHost.trimmingCharacters(in: CharacterSet(charactersIn: "[]."))
+    let localSuffixes = [".localhost", ".local", ".internal", ".lan", ".home", ".home.arpa"]
+    guard host.contains("."), host != "localhost",
+      !localSuffixes.contains(where: host.hasSuffix),
+      !isIPAddress(host),
+      !host.allSatisfy({ $0.isNumber || $0 == "." }),
+      !host.hasPrefix("0x"),
+      (url.port == nil || url.port == (scheme == "https" ? 443 : 80))
+    else { return false }
+
+    return true
+  }
+
+  private static func isIPAddress(_ host: String) -> Bool {
+    var ipv4 = in_addr()
+    if host.withCString({ inet_pton(AF_INET, $0, &ipv4) }) == 1 { return true }
+
+    var ipv6 = in6_addr()
+    return host.withCString { inet_pton(AF_INET6, $0, &ipv6) } == 1
+  }
 
   struct SavedPicture: Sendable {
     let file: String
@@ -139,13 +167,17 @@ enum DailyBriefLinkImages {
 
   /// A plain GET that waits for the answer. nil on any error, a non-200 status, or too many bytes.
   private static func fetch(_ url: URL, maxBytes: Int) -> Data? {
+    guard isAllowedRemoteURL(url) else { return nil }
+
     var request = URLRequest(url: url, timeoutInterval: pageTimeout)
     request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
     request.setValue("text/html,image/*;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
 
     let response = FetchedData()
     let done = DispatchSemaphore(value: 0)
-    let task = URLSession.shared.dataTask(with: request) { data, urlResponse, _ in
+    let session = URLSession(
+      configuration: .ephemeral, delegate: RedirectPolicy(), delegateQueue: nil)
+    let task = session.dataTask(with: request) { data, urlResponse, _ in
       if let data, (urlResponse as? HTTPURLResponse)?.statusCode == 200, data.count <= maxBytes {
         response.data = data
       }
@@ -154,9 +186,27 @@ enum DailyBriefLinkImages {
     task.resume()
     if done.wait(timeout: .now() + pageTimeout + 3) == .timedOut {
       task.cancel()
+      session.invalidateAndCancel()
       return nil
     }
+    session.finishTasksAndInvalidate()
     return response.data
+  }
+
+  private final class RedirectPolicy: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(
+      _ session: URLSession,
+      task: URLSessionTask,
+      willPerformHTTPRedirection response: HTTPURLResponse,
+      newRequest: URLRequest,
+      completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+      guard let url = newRequest.url, isAllowedRemoteURL(url) else {
+        completionHandler(nil)
+        return
+      }
+      completionHandler(newRequest)
+    }
   }
 
   /// Carries the answer out of the request's callback. It's written once, before the
