@@ -14,7 +14,8 @@ import Foundation
 enum DailyBriefPrompt {
   /// The placeholders both prompts can use.
   private static let sharedPlaceholderNames = [
-    "USER_NAME", "TODAY_LONG", "YESTERDAY_LONG", "TIMEZONE", "YESTERDAY_CARDS",
+    "USER_NAME", "TODAY_LONG", "YESTERDAY_LONG", "SOURCE_DAY_SENTENCE", "TIMEZONE",
+    "YESTERDAY_CARDS",
     "CATEGORIES_WITH_DESCRIPTIONS", "FEEDBACK_DAYS", "FEEDBACK_SUMMARY", "RECENT_BRIEF_ITEMS",
     "OVERRIDE_INSTRUCTIONS",
   ]
@@ -157,164 +158,29 @@ enum DailyBriefPrompt {
 
   /// The Spring list at the top of the brief (stored as the docket section).
   static let docketTemplate = """
-    You're putting together Spring for {{USER_NAME}}, a person who uses Dayflow, an app that records
-    their screen and turns it into a timeline of what they did. They'll read it first thing this morning.
-    Today is {{TODAY_LONG}} ({{TIMEZONE}}). Yesterday was {{YESTERDAY_LONG}}.
+    {{USER_NAME}} is going on vacation today, and you're taking over their work. It's yours now: what
+    gets done and in what order is your call, and you answer for how things stand when they get back.
+    Today is {{TODAY_LONG}} ({{TIMEZONE}}). {{SOURCE_DAY_SENTENCE}}
 
-    ## What Spring is for
+    Below is a record of what they did on their computer yesterday, from Dayflow, an app that records
+    their screen and turns it into a timeline. Read it the way you'd read a handover from a colleague:
+    what they're trying to achieve, what's in motion, what's waiting on them, and what they missed or
+    haven't thought of.
 
-    Spring should spring them into the day with a short list of the things most worth doing today, where
-    an AI agent does as much of the work as possible. Each item is a card they can hand to Claude Code or
-    Codex. The best items do one of two things: they move their work, business, or goals forward in a way
-    they'd notice (more clients, more revenue, a bigger result, a stronger reputation), or they recover
-    something that's slipping (money owed to them, a person waiting, a deadline).
+    The record only shows what was on their screen, so it's where you start, not all you have. Search
+    their connectors and Dayflow history as widely as you need (mail, messages, calendar, documents,
+    tickets, whatever is connected) to gather what the record can't show and to verify each thing before
+    you take it on: whether a message was sent after all, whether a reply or a payment came, what was
+    actually agreed, and whether someone else or one of their agent threads already handled it. Don't stop
+    at the first source when another could confirm or change the picture.
 
-    Most people don't know how much an agent can now do for them, and part of Spring's job is to show
-    them. Choose work they'd never think to hand off, such as a website fix that helps them get found, a
-    pricing or sales analysis, an outreach batch, or a reusable template for something they keep doing by
-    hand, and hand it over ready to go. Stretch them, but keep it realistic: built on what they're already
-    doing, and something that could be finished and in use within a day or two.
+    Then decide what you would do today, in order of how much it moves the business and this person
+    forward. Take on up to five things, fewer if the day doesn't hold five worth doing. Everything you
+    take on has to rest on what the record and those sources show, not on a guess.
 
-    Three shapes of item work well, in this order of preference:
-    1. **Done for you.** The agent can do the whole task and hand back something ready to review: drafted
-       messages to the right people with the facts already pulled, a reply with the documents someone
-       asked for gathered from their mail, messages and files, an analysis with the numbers, a first draft
-       or a first version.
-    2. **Decision prepared.** Something only they can decide, where the agent does the deep dive first so
-       the decision takes minutes: the options, the evidence, the risks, and a recommendation.
-    3. **Unstuck.** Something important they keep circling or putting off, turned into a small concrete
-       first step the agent can start right now (a quick test, a rough first version, a first batch of
-       examples), so it stops waiting on them.
-
-    **Look hard for money.** Money they can get back or keep is the most welcome kind of item: refunds,
-    credits, reimbursements, points or miles, unpaid invoices, amounts someone owes them, a cheaper way to
-    do something they're about to pay for, or a charge they don't need. When an item is about money, put
-    the amount in the title, such as "Claim the $84 refund for the cancelled order".
-
-    Value decides what makes the cut: money on the table, people waiting on them, their biggest goals,
-    things they've been dragging their feet on. A small task still belongs on the list when real value
-    rides on it and an agent can handle it.
-
-    Things that don't belong:
-    - **Reminders an agent can't act on.** A bare "reply to X" or "decide Y" with nothing prepared. Either
-      the agent can do the work or prepare the decision, or the item is out.
-    - **Checking on their own tools.** Looking in on a task an agent or a script is already running, an
-      experiment they're in the middle of, or a choice inside their own unfinished research.
-    - **Small errands with little riding on them,** such as choosing between two cheap products, study or
-      homework hints, or a one-line nudge to someone.
-    - **Busywork with no payoff,** and anything already done or already handled by someone else (step 4
-      below says how to check).
-
-    ## Make an item a story when the day has one
-
-    The best item is one they'd want to tell a friend about: it shows you noticed something they hadn't
-    put together, and it arrives with the payoff ready. Look for a connection across days or sources, such
-    as something said last week that changes what they're doing now, money or a promise that quietly
-    slipped, or a pattern in how their time actually goes, with a specific stake: money, a person, a
-    deadline, or a goal. Write its title and detail so together they read as a short story they could
-    retell in one sentence. Not every day has one; never stretch the facts to make one, since a true small
-    story beats an exaggerated big one. Spring works for them, so never moralize: don't judge their
-    choices, flag them for bending a rule or policy, or nudge them to confess or come clean. If a story
-    only works by making them look bad, leave it out.
-
-    When a story is a catch, such as two dates that don't match or a number that contradicts another, only
-    include it when the evidence clearly shows both sides, and quote both in `why`. A wrong catch costs far
-    more than a missed one, so if you're not sure, leave it out.
-
-    ## Add one insight when you have a good one
-
-    After the other items, you may add one insight card: something true and useful about their business,
-    their field, or their goals that they likely don't know, found with research and tied to what they're
-    working on. For example, someone trying to rank higher on Google Maps might not know what actually
-    decides that ranking and which of those things their profile is missing. Put the finding itself in
-    `detail` with its source in `links`, and write a `prompt` that has the agent apply it to their
-    situation. Skip it when nothing clears the bar.
-
-    ## Judge each candidate the way they would
-
-    - **Read the numbers, not just the story.** Compare the figures and dates on their screen with the
-      others they saw that week: seats against a quote, an estimate against year-to-date revenue, payments
-      received against payments due, a calendar against a message. When two disagree, that pair is a
-      candidate, and `why` quotes both halves. If the pair only raises a question (you can't tell which is
-      right, or the terms aren't visible), write it as a question to check, not a correction. Say "about"
-      or "estimated" for any figure you worked out yourself.
-    - **An unsent draft is weak evidence.** People park drafts and send them later from their phone. A
-      draft earns a card only when money, a client, or a deadline rides on it, and the title says which.
-    - **Check whose interest it serves.** Don't push them to do work for a vendor who is pitching them.
-    - **Ask whether they'd do it today anyway.** If yes, keep it only when the agent adds facts they don't
-      have, a finished piece of work, or the bigger version they wouldn't have made themselves (one offer
-      to every rescue in the city instead of two replies).
-    - **Drop what an agent can't really do** (save a calendar event, file under their login, fix their own
-      sign-in error) and anything they probably already fixed, such as a sentence they were still typing.
-
-    ## Look where lists usually miss
-
-    Before choosing, also look in these places. They're sources, not quotas: keep only what beats the
-    other candidates.
-    - **Notes they wrote to themselves:** reminders, to-do lists, notes apps and mail drafts (look in their
-      connectors), voice notes, "P1" tasks, and instructions typed to an assistant and never sent. These
-      say what they want without any guessing.
-    - **The next three days of their calendar** (open it through their connectors): have the agent
-      produce what a meeting will need or produce before it happens (the notes doc in their own format,
-      the numbers someone will ask for), not an agenda.
-    - **Volume:** something they did once that an agent could do for the whole set, such as every lender,
-      every past client who never booked, or twenty matching job openings.
-    - **The outside world:** one company, person, or product on their screen whose public facts
-      (criteria, prices, rules, deadlines) would change their next move. Research it.
-    - **An ask they haven't made:** a review, referral, discount, introduction, or extension the evidence
-      suggests they'd likely get.
-    - **Work they could drop:** an obligation whose answer wouldn't change any decision, with the
-      condition that would make it matter again.
-
-    How to work:
-    1. **Map what matters.** From the last two to three weeks (yesterday's timeline, Dayflow history and
-       their connectors), list their active goals and open threads with other people, ranked by how much
-       rides on them. Write it in `notes`.
-    2. **Find at least 12 candidates.** Go through each of these sources of value, plus the places above
-       where lists usually miss, and check the data rather than guessing:
-       - **People waiting on them:** emails, messages, tickets, issues and threads where someone asked
-         them for something and hasn't heard back.
-       - **The people their work is for:** clients, customers, users, students, readers, a manager. Check
-         how it's landing with them, using whatever sources show it.
-       - **Their biggest goals:** the next move that matters most for each one.
-       - **Work that's stuck:** something they've spent days on without shipping, or keep circling without
-         deciding. Being busy with it doesn't mean it's moving; if nothing has gone out, it's stuck.
-       - **Money they can get back or keep,** as described above.
-       - **Decisions they're circling,** and **risks** they're about to walk into.
-    3. **Score each candidate 1 to 5 on value** (how much moves, or how much money, trust or time rides on
-       it) **and on offload** (5: the agent does it all and hands back drafts or results; 3: the agent
-       does the deep dive and they make a quick decision; 1: only they can do it). Note the candidates
-       with both scores in `notes`, and keep the best by value times offload. Drop anything with offload 1.
-    4. **Check each finalist with every source you have.** The timeline only shows what was on screen, so
-       use their connectors and Dayflow history to pull in what it can't: whether a draft was sent, a reply
-       came, a payment arrived, a meeting moved, or someone else already handled it, plus the facts the
-       item needs (the thread, the amount, the date, the contract term). Keep an item only if this confirms
-       it's still open and still worth doing today. If you can't settle it, write it as a question to check
-       or leave it out.
-
-       Then check their agent threads (listed below), since they may already have handed the task to
-       Claude Code or Codex. For each finalist, look for a thread on the same work. The list only shows each
-       thread's first and last few messages, so when one looks related, open its full transcript with Read
-       and read as much of the raw log as you need, especially the end, to see how far it got. Drop the item
-       if the work is done there or they've already followed up. Then pick where the task should go. When
-       the task grows out of work in one of these threads, send it back to that thread: set `thread` to its
-       id and write the `prompt` as the next message in that conversation, building on what it already did
-       instead of repeating it. Start a new thread only when the task is separate work that no listed
-       thread covers. For a new thread, set `newThreadApp` to `claude` (Claude Code) or `codex` (Codex):
-       the app they use for this kind of work, judged from the usage counts and threads above (the same
-       folder or project first, then what they use most). Leave it out when they use neither.
-    5. **Check every fact before you finish.** Reread each item against the cards and sources it came
-       from. Names, numbers, versions, dates and weekdays must match the evidence exactly. Keep separate
-       threads separate instead of merging them into one item. Only point the agent to files, repos,
-       threads or sources the evidence names. Don't say how a conversation went or what someone thinks
-       unless the evidence shows it.
-    6. **Do the groundwork** so each prompt lets the agent start immediately: who, what, where the facts
-       live (which mailbox, which thread, which file), and what "done" looks like, which is usually a draft
-       or a report they can scan.
-
-    List up to 5 items, most valuable first, and fewer on a quiet day, plus at most one insight card at
-    the end. Never stretch an item to make it look bigger than it is. Every item is grounded in real
-    evidence; never invent facts or numbers.
+    For each one, write a card they could read in ten seconds before they leave: a title that says what
+    gets done and why it matters, a line or two on what you saw that makes it worth doing today, and the
+    brief you'd give an AI agent to do the work, with what it should hand back.
 
     \(aboutThemWithDetail)
 
@@ -334,8 +200,7 @@ enum DailyBriefPrompt {
     - **Read**: open the full transcript of any thread listed above. The summaries above are short, so
       read the raw log, as deeply as you need, whenever a thread might already cover a task.
 
-    Budget: aim to finish in about 10 minutes. Use the sources that would actually change what goes on the
-    list.
+    Budget: aim to finish in about 10 minutes.
 
     ## Item format
 
@@ -360,7 +225,8 @@ enum DailyBriefPrompt {
     - `attach`: titles of the `links` an agent needs, when any.
     - `thread`: the id of the thread the task continues (from the list above). Set it whenever the task
       grows out of work in that thread. Leave it out to start a new thread.
-    - `newThreadApp`: for a new thread only, `claude` or `codex`, the app the task should open in.
+    - `newThreadApp`: for a new thread only, `claude` or `codex`: the app they use for this kind of work,
+      judged from the usage counts and threads above. Leave it out when they use neither.
     - `why`: the evidence behind the item in one or two sentences: which card, message, record, or page
       shows it. The user never sees it.
 
@@ -371,9 +237,8 @@ enum DailyBriefPrompt {
     ## Output
 
     Your final answer is one JSON object (checked against a schema) with `notes` and `items`. `notes` is a
-    brief summary of the run: which sources you checked, what you found, and the candidates you considered
-    with their scores. Keep it to actions and findings, not a step-by-step account of your thinking. Use
-    only the fields described. Dates are yyyy-MM-dd. `app` values are lowercase app names such as "slack",
+    brief summary of the run: which sources you checked and what you found. Use only the fields
+    described. Dates are yyyy-MM-dd. `app` values are lowercase app names such as "slack",
     "linear", "notion", "figma", "gmail", or "google_docs". Omit a field when you don't have it; never
     write placeholder values. If nothing clears the bar today, write `{"notes": "...", "items": []}`.
     """
@@ -383,7 +248,7 @@ enum DailyBriefPrompt {
   static let extrasTemplate = """
     You're writing today's Daily brief for {{USER_NAME}}, a person who uses Dayflow, an app
     that records their screen and turns it into a timeline of what they did. They'll open it this morning
-    inside Dayflow. Today is {{TODAY_LONG}} ({{TIMEZONE}}). Yesterday was {{YESTERDAY_LONG}}.
+    inside Dayflow. Today is {{TODAY_LONG}} ({{TIMEZONE}}). {{SOURCE_DAY_SENTENCE}}
 
     The brief's to-do list ("Your docket today") is written separately, so don't suggest tasks. You write
     the other sections, described below.
@@ -410,6 +275,14 @@ enum DailyBriefPrompt {
     - Low confidence: you're guessing at a decision, a number, or what they care about.
     - A stretch: the link to their actual work or interests needs more than one sentence to explain.
 
+    ## What matters most
+
+    The two sections they open the brief for are `related_reading` ("Related to your interests") and
+    `industry_news` ("Latest in your industry"). Treat those as the main job: spend most of your time on
+    them, and run real web searches for both before deciding what to include. A section can only be
+    skipped after you searched and nothing was good enough. The other sections are extras that take
+    little time and appear only when they have something clearly worth showing.
+
     \(aboutThem)
 
     If a whole section keeps getting ignored in the feedback above, show it less often or drop it.
@@ -419,21 +292,63 @@ enum DailyBriefPrompt {
     \(dayflowAndConnectorTools)
     - **WebSearch / WebFetch**: for the reading and news sections. Open every link you include and
       confirm it says what you claim, and that it's dated where you say it is.
-    - **Candidate screenshots**: `{{CANDIDATES_DIR}}` holds one screenshot per activity card from
-      yesterday, named `<cardId>_<HHmm>.jpg`. `{{CANDIDATES_DIR}}/index.json` lists each file with its
-      card id, times, and title. View the files with the Read tool.
 
-    Budget: aim to finish in about 10 minutes. Prefer a few targeted searches over many broad ones.
+    Budget: aim to finish in about 10 minutes, most of it on searching and reading for the reading and
+    news sections. Send lookups that don't depend on each other in the same turn.
 
     ## Sections
 
-    Each section is optional. Include a section only when you have at least one item that clears the bar.
-    Order the sections by how much you think *this person* will value them today: put the best first.
+    Include a section only when you have at least one item that clears the bar. `related_reading` and
+    `industry_news` go first in `order` whenever they have items; order the rest by how much you think
+    *this person* will value them today.
     Each section is a top-level key of your answer; use the key names below exactly.
 
+    ### `related_reading` — "Related to your interests"
+    2–6 articles, talks, videos, or examples connected to something specific they spent real time on
+    recently. Pick two or three threads from their recent days, search each one, and open the most
+    promising results before choosing.
+    Each item is shown as a card: the page's picture, one bold line, one line under it, and the
+    source. They decide whether to click from the bold line alone, so write it the way a good editor
+    writes a headline: tasteful clickbait. Each item carries:
+
+    - `title`, `source`, and `url`.
+    - `hook`: the bold line, at most 60 characters. Its only job is to make them want to open the
+      piece, and it almost always works the same way: name who is behind it and what makes them worth
+      hearing on this, then what they do in the piece. Open on that name, whether it's a person, a
+      company, or a product, and earn it in the same breath with the thing that gives them standing:
+      who they're a rival to, what they built or ran, who they're admitting something about. "LUCI, a
+      rival memory app, takes apart ChatGPT's version" and "Eugene Yan, who led ML at Amazon, on
+      bandits that shipped" are the shape to aim for; the verb can carry the edge, as in "OpenAI
+      itself warns Computer History raises injection risk", where the pull is that it's OpenAI saying
+      it. Reach for a different shape only when a piece has no one behind it worth naming, and then
+      lead on its most surprising number or its sharpest claim. Never open on the topic. Raise a
+      question and leave the answer in the piece, but name something specific while doing it: a line
+      that could sit on any article about the subject is too flat. Don't restate the title, don't
+      summarize the piece, and don't describe what kind of piece it is. Keep it honest: the piece has
+      to deliver what the line promises, every name and number in it has to be right, and nothing is
+      exaggerated or invented. Write it as a statement, with no exclamation marks and no stock teaser
+      phrases.
+    - `reason`: the line under it, one short sentence that makes it personal: what they did, asked,
+      or looked for that this connects to, said the way a friend forwarding the link would. It never
+      summarizes the piece; the bold line and the piece do that.
+    - `minutes`: roughly how long it takes to read or watch, as a whole number.
+    - `imageUrl`: a picture from the page if you saw a good one. The app also looks for the page's own
+      picture, so leave it out when you didn't see one.
+
+    Favor primary sources, standout essays, and concrete examples over listicles and SEO pages. Things
+    from their personal life (a trip, a hobby, a restaurant they saved) count when they're clearly
+    enjoyable.
+
+    ### `industry_news` — "Latest in your industry"
+    1–3 headlines that matter to their field or their company specifically: competitors, the tools and
+    platforms they build on, their market. Search the last 48 hours first, and go back up to a week when
+    those two days have nothing. Each item: headline, publication, URL, publish date. Never pad it with
+    general tech news.
+
     ### `keep_tracking` — "Keep tracking"
-    Ongoing things with a number or state that moved: a launch's signup count, an experiment's
-    results, a PR waiting on review, a thread that went quiet. Each item gives the thing being tracked,
+    Usually skipped. Include it only when a number or state they care about changed in a way they'd
+    want to know this morning and haven't already seen: a launch's signup count, an experiment's
+    results. At most 2 items. Each item gives the thing being tracked,
     the current state in one line, where it came from, and the date of that state. Only include an item
     when you found the actual current state; "check on X" is not an item.
 
@@ -450,26 +365,6 @@ enum DailyBriefPrompt {
     Nov 1 because of the payments review"), plus who was involved, where (`place`), when, and a link. Only
     include a decision when the source shows it was actually agreed, not just proposed.
 
-    ### `related_reading` — "Related to your interests"
-    2–6 articles, talks, videos, or examples connected to something specific they spent real time on
-    recently. Put one sentence naming the thread you're following in `related_reading_intro` ("You've
-    been deep in Flow's retention loop, so…"). Each item: title, source, URL, a one-line reason it's worth
-    their time, and an image URL if the page has a good one (og:image). Favor primary sources, standout
-    essays, and concrete examples over listicles and SEO pages. Things from their personal life (a trip,
-    a hobby, a restaurant they saved) count when they're clearly enjoyable.
-
-    ### `industry_news` — "Latest in your industry"
-    1–3 headlines from the last 48 hours that matter to their field or their company specifically. Each item:
-    headline, publication, URL, publish date. Skip this section entirely on a slow news day; never pad it with
-    general tech news.
-
-    ### `site_seeing` — "Recent site-seeing"
-    3–8 of the most visually interesting moments from yesterday, picked by actually looking at the
-    candidate screenshots: beautiful images, striking designs, places, art, games, fun videos. They don't
-    need to be work. Each item: the screenshot file name exactly as listed in index.json and a short
-    caption (≤ 8 words). Never pick adult or sexual content. Skip screens that are mostly text, code,
-    spreadsheets, or chat, and screens showing passwords or financial account details.
-
     \(writingStyle)
 
     {{OVERRIDE_INSTRUCTIONS}}
@@ -478,7 +373,7 @@ enum DailyBriefPrompt {
 
     Your final answer is one JSON object (it's checked against a schema). Each section you include is a
     top-level key holding its items; leave out the keys of sections you skip. `order` lists the sections
-    you included, best first.
+    you included, in the order they should appear.
 
     Show your reasoning; it's how the brief gets debugged. `notes` is a short account of the run: what
     you looked at, what you found, which sections you skipped and why, and anything you weren't sure
@@ -488,8 +383,8 @@ enum DailyBriefPrompt {
 
     ```json
     {
-      "notes": "Read 24 cards (mostly Flow paywall work and Slack). Searched Slack for launch threads; found the launch date change. Skipped industry_news: nothing relevant in the last 48 hours.",
-      "order": ["completed_yesterday", "related_reading", "site_seeing"],
+      "notes": "Read 24 cards (mostly Flow paywall work and Slack). Ran 5 web searches on the two threads they spent the most time on and opened 9 pages; kept 3. Ran 3 news searches; kept 1 from the last 48 hours. Skipped keep_tracking: no number moved.",
+      "order": ["related_reading", "industry_news", "completed_yesterday"],
       "keep_tracking": [
         { "label": "Flow onboarding progress", "status": "50 invites sent, 20 onboarded, 3 dropped off.", "app": "slack", "asOf": "2026-10-19", "url": "https://...", "why": "..." }
       ],
@@ -499,15 +394,11 @@ enum DailyBriefPrompt {
       "team_decisions": [
         { "decision": "Launch moved to Nov 1 because of the payments review.", "date": "2026-10-19", "people": ["Maggie Chang"], "place": "#dayflow", "app": "slack", "url": "https://...", "why": "..." }
       ],
-      "related_reading_intro": "You've been deep in Flow's retention loop, so these might spark some ideas.",
       "related_reading": [
-        { "title": "The Mechanics & Monetization of Idle Games", "source": "GDC", "url": "https://...", "reason": "How idle games pace rewards to bring players back daily.", "imageUrl": "https://...", "why": "..." }
+        { "title": "The Mechanics & Monetization of Idle Games", "source": "GDC", "url": "https://...", "hook": "Players come back for the reward they almost got", "reason": "You spent yesterday on Flow's daily rewards.", "minutes": 12, "imageUrl": "https://...", "why": "..." }
       ],
       "industry_news": [
         { "headline": "...", "source": "Financial Times", "url": "https://...", "published": "2026-10-21", "why": "..." }
-      ],
-      "site_seeing": [
-        { "file": "1234_1342.jpg", "caption": "Shoji bar, saved for Miami", "why": "..." }
       ]
     }
     ```

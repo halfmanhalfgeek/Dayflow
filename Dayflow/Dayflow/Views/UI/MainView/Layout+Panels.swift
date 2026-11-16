@@ -40,9 +40,6 @@ extension MainView {
     }
     .padding(0)
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .overlay {
-      PrivacyShieldUpgradeHost()
-    }
   }
 
   private var leftColumn: some View {
@@ -274,7 +271,9 @@ extension MainView {
         PrivacyShieldFooterItem()
           .opacity(contentOpacity)
       }
-      .padding(.horizontal, 24)
+      .padding(.leading, 24)
+      // Lines the toggle's right edge up with the timeline cards: 5pt column padding plus the cards' 5pt inset.
+      .padding(.trailing, 10)
 
       if timelineMode == .day, reviewPromptCount > 0 {
         CardsToReviewButton(count: reviewPromptCount) {

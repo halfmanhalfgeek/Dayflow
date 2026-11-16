@@ -39,16 +39,13 @@ struct PrivacyShieldToggle: View {
   @ViewBuilder
   private var icon: some View {
     switch shield.status {
-    case .preparing:
-      ProgressView()
-        .scaleEffect(0.4)
-        .frame(width: 12, height: 12)
     case .failed:
       Image(systemName: "exclamationmark.triangle.fill")
         .resizable()
         .scaledToFit()
         .foregroundColor(theme.accent)
-    case .on, .off:
+    case .preparing, .on, .off:
+      // No spinner while the model downloads or loads: the switch already shows on, and the tooltip says it's getting ready.
       // Stand-in for the Figma shield icon (node 2:1510), which couldn't be exported.
       Image(systemName: "shield.lefthalf.filled")
         .resizable()
@@ -97,6 +94,9 @@ private struct PrivacyShieldSwitch: View {
 
 /// The "NEW" callout above the toggle (Figma node 2:2100). Shown until it's closed or the toggle is used.
 struct PrivacyShieldCallout: View {
+  /// The callout's shown event fires once per launch, not each time the timeline reappears.
+  @MainActor private static var reportedShown = false
+
   @Environment(\.dayflowTheme) private var theme
   @ObservedObject private var shield = PrivacyShield.shared
 
@@ -113,7 +113,7 @@ struct PrivacyShieldCallout: View {
           .font(Font.custom("Figtree", size: 12).weight(.semibold))
           .foregroundColor(theme.textPrimary)
         Spacer(minLength: 0)
-        Button(action: { shield.dismissCallout() }) {
+        Button(action: { shield.dismissCallout(method: "close_button") }) {
           Image(systemName: "xmark")
             .font(.system(size: 8, weight: .semibold))
             .foregroundColor(theme.textTertiary)
@@ -135,6 +135,11 @@ struct PrivacyShieldCallout: View {
     .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(theme.cardBorder, lineWidth: 1))
     .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 2)
     .transition(.opacity.combined(with: .move(edge: .bottom)))
+    .onAppear {
+      guard !Self.reportedShown else { return }
+      Self.reportedShown = true
+      AnalyticsService.shared.capture("privacy_shield_callout_shown")
+    }
   }
 }
 
