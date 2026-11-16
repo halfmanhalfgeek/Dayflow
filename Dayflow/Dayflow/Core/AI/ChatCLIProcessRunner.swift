@@ -644,6 +644,19 @@ struct ChatCLIProcessRunner {
   }
 
   /// Run a streaming command, yielding events as JSONL lines arrive
+  /// Waits for the process to exit. Gives up early, reporting a timeout so the caller stops
+  /// the process, when the batch was cancelled because the Mac is going to sleep.
+  private static func waitForExit(
+    _ semaphore: DispatchSemaphore, timeoutSeconds: TimeInterval
+  ) -> DispatchTimeoutResult {
+    let deadline = Date().addingTimeInterval(timeoutSeconds)
+    while true {
+      let remaining = deadline.timeIntervalSinceNow
+      guard remaining > 0, !Task.isCancelled else { return .timedOut }
+      if semaphore.wait(timeout: .now() + min(1, remaining)) == .success { return .success }
+    }
+  }
+
   func runStreaming(
     tool: ChatCLITool,
     prompt: String,
@@ -868,7 +881,7 @@ struct ChatCLIProcessRunner {
       process.waitUntilExit()
       semaphore.signal()
     }
-    let result = semaphore.wait(timeout: .now() + timeoutSeconds)
+    let result = Self.waitForExit(semaphore, timeoutSeconds: timeoutSeconds)
     if result == .timedOut {
       process.terminate()
       cleanupStreamingResources()
@@ -1684,7 +1697,7 @@ struct ChatCLIProcessRunner {
       process.waitUntilExit()
       semaphore.signal()
     }
-    let result = semaphore.wait(timeout: .now() + timeoutSeconds)
+    let result = Self.waitForExit(semaphore, timeoutSeconds: timeoutSeconds)
     if result == .timedOut {
       try? stdinPipe?.fileHandleForWriting.close()
       process.terminate()
