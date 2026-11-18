@@ -22,6 +22,7 @@ enum TimelineFailureKind: String {
   case apiKeyProblem = "api_key_problem"
   case usageLimitHit = "usage_limit_hit"
   case outOfCredits = "out_of_credits"
+  case paymentPastDue = "payment_past_due"
   case geoBlocked = "geo_blocked"
   case accountBlocked = "account_blocked"
   case modelMisconfigured = "model_misconfigured"
@@ -37,8 +38,8 @@ enum TimelineFailureKind: String {
   var failsEveryRequestToProvider: Bool {
     switch self {
     case .dayflowProRequired, .providerLoginExpired, .cliNotInstalled, .cliOutdated,
-      .localEngineOffline, .apiKeyProblem, .usageLimitHit, .outOfCredits, .geoBlocked,
-      .accountBlocked, .notConfigured:
+      .localEngineOffline, .apiKeyProblem, .usageLimitHit, .outOfCredits, .paymentPastDue,
+      .geoBlocked, .accountBlocked, .notConfigured:
       return true
     // A missing or unsupported model can work with the other step's model.
     case .modelMisconfigured, .localModelMissing, .transient, .modelFlaky, .unknown:
@@ -69,9 +70,8 @@ struct TimelineFailureToastContent {
 struct TimelineFailureClassification {
   let kind: TimelineFailureKind
 
-  /// Provider named by the error text itself, when it identifies one.
-  /// More reliable than the configured provider: after a backup fallback,
-  /// the failing provider isn't the primary one.
+  /// Provider named by the error text itself, when it identifies one. Only a guess from the
+  /// wording, so for Claude and ChatGPT the provider that actually failed wins over it.
   let providerName: String?
 
   /// One or two plain sentences for the failed timeline card. Written for
@@ -83,7 +83,7 @@ struct TimelineFailureClassification {
     switch kind {
     case .dayflowProRequired:
       return
-        "Your Dayflow Pro plan has ended. Renew it or switch to another provider in Settings. \(catchUp)"
+        "Dayflow's own AI needs an active Pro plan. Subscribe, or switch to another provider in Settings. \(catchUp)"
 
     case .providerLoginExpired:
       if let fix = signInFix(for: provider) {
@@ -118,11 +118,19 @@ struct TimelineFailureClassification {
       return
         "Your \(provider) account is out of credits. Top it up, or switch providers in Settings. \(catchUp)"
 
+    case .paymentPastDue:
+      return
+        "\(provider) paused your plan, usually because a payment is past due. Pay or renew in your \(provider) account. \(catchUp)"
+
     case .geoBlocked:
       return
         "\(provider) isn't available in your region. Switch to another provider in Settings. \(catchUp)"
 
     case .accountBlocked:
+      if signsInThroughItsOwnApp(provider) {
+        return
+          "\(provider) blocked access for this account. Check your \(provider) account for what it needs from you, or switch providers in Settings. \(catchUp)"
+      }
       return
         "\(provider) blocked access for this account. A new API key or a different provider in Settings usually fixes it. \(catchUp)"
 
@@ -167,8 +175,9 @@ struct TimelineFailureClassification {
     switch kind {
     case .dayflowProRequired:
       return TimelineFailureToastContent(
-        title: "Your Dayflow Pro plan ended",
-        body: "Renew to keep your timeline going, or switch to a free provider like Gemini.",
+        title: "Dayflow's AI needs a Pro plan",
+        body:
+          "Your account doesn't have an active Pro plan, so recent activity hasn't been turned into cards. Subscribe, or switch to a free provider like Gemini.",
         steps: [],
         command: nil,
         destination: .account
@@ -268,6 +277,16 @@ struct TimelineFailureClassification {
         destination: .providers
       )
 
+    case .paymentPastDue:
+      return TimelineFailureToastContent(
+        title: "Your \(provider) payment is past due",
+        body:
+          "\(provider) paused your plan until the payment goes through. Pay or renew in your \(provider) account, or switch providers.",
+        steps: [],
+        command: nil,
+        destination: .providers
+      )
+
     case .geoBlocked:
       return TimelineFailureToastContent(
         title: "\(provider) isn't available in your region",
@@ -280,7 +299,9 @@ struct TimelineFailureClassification {
     case .accountBlocked:
       return TimelineFailureToastContent(
         title: "\(provider) blocked this account",
-        body: "Creating a new API key or switching providers usually fixes this.",
+        body: signsInThroughItsOwnApp(provider)
+          ? "Check your \(provider) account for what it needs from you, or switch providers."
+          : "Creating a new API key or switching providers usually fixes this.",
         steps: [],
         command: nil,
         destination: .providers
@@ -366,8 +387,23 @@ struct TimelineFailureClassification {
     }
   }
 
-  private func resolvedProvider(_ fallbackProviderLabel: String?) -> String {
-    providerName ?? displayName(forProviderLabel: fallbackProviderLabel) ?? "your AI provider"
+  /// The name to show for the provider that failed. `failingProviderLabel` is the provider
+  /// the request was sent to. For Claude and ChatGPT it wins over the name guessed from the
+  /// error text, because both tools word some errors the same way ("could not be refreshed")
+  /// and the wrong guess would send the user to sign in to the other one.
+  private func resolvedProvider(_ failingProviderLabel: String?) -> String {
+    let failingProvider = displayName(forProviderLabel: failingProviderLabel)
+    // Claude through Bedrock is the exception: the expired session is AWS's, which only the
+    // error text says.
+    if providerName != "AWS", let failingProvider, signsInThroughItsOwnApp(failingProvider) {
+      return failingProvider
+    }
+    return providerName ?? failingProvider ?? "your AI provider"
+  }
+
+  /// Claude and ChatGPT run through their own command-line tools and accounts, not an API key.
+  private func signsInThroughItsOwnApp(_ provider: String) -> Bool {
+    provider == "Claude" || provider == "ChatGPT"
   }
 
   /// Provider labels arrive as lowercase analytics names ("gemini",
@@ -539,13 +575,15 @@ enum TimelineFailureClassifier {
         "sso session", "aws sso login",
       ]
     ),
-    (.cliNotInstalled, ["cli not found", "enoent"]),
+    (.cliNotInstalled, ["cli not found", "enoent", "native binary not installed"]),
     (.cliOutdated, ["requires a newer version of codex", "newer version of codex"]),
     (
       .modelMisconfigured,
       [
         "is not supported when using codex with a chatgpt account",
         "is not found for api version", "not_found_error",
+        // A gateway in front of Claude that doesn't know the model Dayflow asks for.
+        "is not a valid llm model",
       ]
     ),
     (.localEngineOffline, ["ollama/lmstudio is running"]),
@@ -565,6 +603,8 @@ enum TimelineFailureClassifier {
         "you've hit your", "you’ve hit your",
       ]
     ),
+    // "Claude Code can't use your Claude subscription, usually because a payment is past due".
+    (.paymentPastDue, ["payment is past due", "use your claude subscription"]),
     (
       .outOfCredits,
       [
@@ -580,7 +620,15 @@ enum TimelineFailureClassifier {
       ]
     ),
     (.geoBlocked, ["location is not supported"]),
-    (.accountBlocked, ["denied access", "organization has disabled", "account is on hold"]),
+    (
+      .accountBlocked,
+      [
+        "denied access", "organization has disabled", "account is on hold",
+        // "Your account can't receive replies from Claude right now. You can find the next
+        // step in the Anthropic Verification Portal".
+        "verification portal", "receive replies from claude",
+      ]
+    ),
     (.notConfigured, ["no llm provider configured"]),
     (
       .transient,
@@ -603,15 +651,13 @@ enum TimelineFailureClassifier {
   ]
 
   private static func providerName(in lower: String) -> String? {
-    if lower.contains("codex") || lower.contains("chatgpt")
-      || lower.contains("could not be refreshed")
-    {
-      return "ChatGPT"
-    }
-    // Claude via Bedrock: the expired session is AWS's, and the fix is
-    // 'aws sso login' — not Claude's own login. Must be checked before Claude.
+    // Claude via Bedrock: the expired session is AWS's, and the fix is 'aws sso login', not
+    // Claude's own login. Checked first, so no other provider's name in the text hides it.
     if lower.contains("aws sso") || lower.contains("sso session") {
       return "AWS"
+    }
+    if lower.contains("codex") || lower.contains("chatgpt") {
+      return "ChatGPT"
     }
     if lower.contains("claude") || lower.contains("/login") || lower.contains("anthropic") {
       return "Claude"

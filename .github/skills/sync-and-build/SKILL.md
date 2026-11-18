@@ -47,33 +47,34 @@ If there are no new commits, inform the user that the fork is already up to date
 
 ---
 
-## Step 2 — Merge upstream into main
+## Step 2 — Merge upstream and reapply the fork's security fixes
 
 ```bash
-git merge upstream/main
+git merge --no-ff --no-commit upstream/main
 ```
 
-If the merge produces conflicts:
-1. Run `git status` to identify conflicting files and list them for the user
-2. For each conflict, check whether it affects a locally customised file (see Step 4 for the list). If so, advise the user that their customisation may need manual resolution and show the conflict markers
-3. Do NOT auto-resolve conflicts — stop and wait for user guidance
+Use the selected upstream ref in place of `upstream/main` when supplied. Use the upstream implementation as the starting point for changed behaviour, then reapply the fork's security fixes to that implementation. Check affected paths even when Git merges cleanly. Preserve fork customisations listed in Step 4.
 
-If the merge succeeds cleanly, continue.
+- For conflicts covered by an existing fork security fix, take the upstream implementation for the conflicting change and reapply the security fix before staging it. For example, keep upstream's Gemini model-list request and send the key in the `X-Goog-Api-Key` header. Keep credentials out of URLs and logs, and update affected tests to verify the protected behaviour.
+- For any conflict whose resolution remains unclear, run `git status`, report the conflicting files and relevant markers, and wait for user guidance.
+
+Stage the resolutions and complete Steps 3 and 4 before committing the merge.
 
 ---
 
 ## Step 3 — Security review of upstream changes
 
-The upstream repository has previously had issues with API key leakage, unencrypted secret storage, and excessive telemetry. Review the incoming changes:
+The upstream repository has previously had issues with API key leakage, unencrypted secret storage, and excessive telemetry. Review the incoming changes and the staged result:
 
 ```bash
-git diff HEAD^1..HEAD
+git diff HEAD...upstream/main
+git diff --cached HEAD
 ```
 
 Scan the diff for the following and report any findings:
 
 ### Critical — API key / secret exposure
-- API keys or tokens in URL query strings (`?key=`, `?token=`, `?api_key=`)
+- API keys or tokens in URL query strings, including parameters after `?` or `&`
 - Secrets written to `UserDefaults` instead of Keychain
 - API keys logged via `print()`, `NSLog()`, or `os_log()` outside `#if DEBUG` blocks
 - Hardcoded secrets or credentials in source
@@ -95,7 +96,7 @@ Scan the diff for the following and report any findings:
 - Debug logging left enabled in release paths (outside `#if DEBUG`)
 - Removed or weakened input validation
 
-Report findings as a categorised list. If any Critical or High issues are found, warn the user clearly and ask whether to continue or stop.
+Report findings by severity, including upstream regressions corrected by reapplying fork security fixes. If any Critical or High issue remains in the staged result, warn the user clearly and ask whether to continue or stop.
 
 ---
 
@@ -130,18 +131,23 @@ Also confirm these files exist:
 # DailyView — must default to true (unlocked)
 grep "isDailyUnlocked.*true" Dayflow/Dayflow/Views/UI/DailyView.swift
 
-# JournalView — no lock gate (expected: 0)
-grep -c "lockScreen" Dayflow/Dayflow/Views/UI/JournalView.swift
+# If an older ref still has JournalView, verify it has no lock gate.
+# Journal has been retired on main.
+if [ -f Dayflow/Dayflow/Views/UI/JournalView.swift ]; then
+  grep -c "lockScreen" Dayflow/Dayflow/Views/UI/JournalView.swift
+fi
 ```
 
 ### 4c — Security fixes
 
 ```bash
-# API keys must be in headers, not URL query strings
-grep "key=.*apiKey\|?key=" Dayflow/Dayflow/Core/AI/GeminiDirectProvider.swift
-grep "key=.*apiKey\|?key=" Dayflow/Dayflow/Core/AI/GemmaBackupProvider.swift
-grep "key=.*apiKey\|?key=" Dayflow/Dayflow/Utilities/GeminiAPIHelper.swift
-# Expected: no matches
+# Confirm header-based Gemini authentication in each file
+grep -in 'X-Goog-Api-Key' Dayflow/Dayflow/Core/AI/GeminiDirectProvider*.swift \
+  Dayflow/Dayflow/Core/AI/GemmaBackupProvider*.swift Dayflow/Dayflow/Utilities/GeminiAPIHelper.swift
+# Expected no matches for credentials in URL query strings
+grep -Ein '[?&](key|api[_-]?key|token|access_token)=|URLQueryItem.*"(key|api[_-]?key|token|access_token)"' \
+  Dayflow/Dayflow/Core/AI/GeminiDirectProvider*.swift \
+  Dayflow/Dayflow/Core/AI/GemmaBackupProvider*.swift Dayflow/Dayflow/Utilities/GeminiAPIHelper.swift
 
 # KeychainManager — print only in DEBUG
 grep -A1 "print(" Dayflow/Dayflow/Core/Security/KeychainManager.swift
@@ -155,6 +161,8 @@ grep "beforeSend\|serverName\|user = nil" Dayflow/Dayflow/Utilities/SentryHelper
 ```
 
 If any customisation is missing or has been reverted by the merge, report the specific issue to the user. **Do NOT proceed to build until the user confirms all customisations are correct.**
+
+Once the security review and customisation checks pass, commit the staged merge.
 
 ---
 
@@ -223,8 +231,9 @@ Once complete, report:
 ```bash
 git fetch upstream
 git log --oneline HEAD..upstream/main  # check for new commits
-git merge upstream/main                 # resolve conflicts if any
-# → run security review and customisation checks
+git merge --no-ff --no-commit upstream/main
+# → take upstream updates, reapply fork security fixes, stage, review, and verify
+git commit --no-edit
 rm -rf ./build && ./build.sh
 rm -rf /Applications/Dayflow.app && cp -r ./build/Build/Products/Release/Dayflow.app /Applications/
 git push origin main
